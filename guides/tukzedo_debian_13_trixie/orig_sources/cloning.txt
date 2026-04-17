@@ -1,0 +1,87 @@
+##	- Purpose:
+##	- History:
+##		- 20260323: Created.
+
+## High-level overview:
+##	- Notes:
+##		- When cloning, various UUIDs and names really should be changed, otherwise you run an extremely high risk of accidentally booting into the wrong device without realizing it, and/or importing the wrong ZFS pool, if device order is favorable for that. It happens, and when it does, it can end in disaster.
+##			- If there is 0% chance of the cloned device even being on the same network as the source, then you can get away without changing anything. Or, just the hostname and Luks encryption keys.
+##		- You will give the cloned OS a new short 'mUID' (which is used in multiple places - Luks volume, LVM, ZFS pools).
+##		- The hostname will also change, but NOT to the 'mUID'. It will change to something different.
+##			- This is so that a drive can trivially change hostnames.
+##				- A common use case is the drive physically moving - not being cloned - to different hardware. Without the hassle of changing the 'mUID' everywhere.
+##		- The cloning process involves non-trivial, potentially breaking system changes. Therefore it's important to do it in a VM, even if cloning real hardware:
+##			- To protect your real host OS and hardware from very easy-to-make catastrophic mistakes.
+##			- To easily roll-back changes:
+##				- You should always do major system changes like this, to a virtual image in raw .img format, on a checksummed auto snapshotting filesystem such as Btrfs or ZFS.
+##					- Before each virtual reboot, power the VM off instead, and take a manual snapshot.
+##					- If a change breaks something badly, roll back to a working snapshot.
+##			- If cloning virtual-to-virtual, just copy the source .img file at the filesystem level, or 'clone' it in the hypervisor interface so that it also has a new ID at that level.
+##			- If cloning one physical drive to another physical drive, first clone the source device to a virtual raw .img file and make the changes to that, before copying the final .img file to the target device.
+##				- Modern `cat`, `dd`, `pv`, or `ddrescue` are all just as good assuming hardware in good working order. The real magic is in the way Linux presents block devices under `/dev` to userland tools, not the tools themselves. `dd` just provides more options that aren't very relevant anymore on modern fast hardware, and `ddrescue` can do deeper recovery on damaged media. But `cat` does the job exactly just as well as `dd`, while `pv` and especially `ddrescue` provides better user status.
+##	- Generate a new short unique number for the new clone, that we'll refer to as 'mUID'. For example, [POSIX time]/60 converted to RFC 4648 base32.
+##	- Copy virtual .img file to clone.img, or for a real drive, something like `sudo cat /dev/xyz > /destdir/clone.img`.
+##		- (With a more meaningful destination folder and filename.)
+##	- Load clone.img into libvirt and/or Virtual Machine Manager GUI, along with a bootable rescue image, drive, or live iso.
+##	- Change GPT identifiers and references
+##		- Boot into UEFI setup, disable secureboot
+##		- Reboot back into your rescue image, drive, or live iso.
+##		- Change the target's GPT UUID, GPT partition UUIDs, and filesystem PARTUUIDs and PARTLABELS.
+##			- Update all references, e.g. in /etc/fstab and dracut modules.
+##			- Notes:
+##				- This can and will be done non-destructively.
+##				- This works just as well on a virtual disk image as a real block device, and will survive the copy from .img to physical.
+##		- Reboot into the new system (in a VM) to make sure the sytem works with the new GPT UUIDS.
+##	- Change LUKS2 identifiers, names, and references
+##		- Reboot back into your rescue image, drive, or live iso.
+##		- Change the Luks UUID and all references.
+##		- Change the Luks name and all references.
+##		- Reboot into the new system (in a VM) to make sure the system works with the new UUIDS and names.
+##	- Change LUKS2 keys
+##		- Reboot back into your rescue image, drive, or live iso.
+##		- Add a new primary dracut/initrd password, note the keyslot and metadata. Make it reasonably complex if USB will be primary unlock. Store metadata and the password in a password manager.
+##			luksAddKey  --pbkdf argon2id
+##		- Remove all the other keyslots
+##		- Add a new LUKS password for Grub fallback, to something complex (due to weaker key encryption). Store metadata and the password in a password manager.
+##			sudo cryptsetup luksAddKey --pbkdf pbkdf2 --hash sha256
+##		- Delete and create a new stage 2 key file ('/etc/cryptkeys/${mUID}') for Grub fallback. Store metadata, path, and contents in a password manager.
+##		- Create a new USB key file (on a new USB thumbdrive) for primary unlock. Store metadata, path, and contents in a password manager.
+##		- Reboot into the new system (VM) to make sure the new keys work. Test all the new keyslots and unlock methods.
+##	- Change LVM names and references
+##		- Reboot back into your rescue image, drive, or live iso.
+##		- Make the changes
+##		- Reboot into the new system (VM) to make sure the system works with the new names.
+##	- Change ZFS hostid and pool names
+##		- Reboot back into your rescue image, drive, or live iso.
+##		- Make the changes
+##		- Reboot into the new system (VM) to make sure the system works with the new names.
+##	- Change systemd hostid, system hostname, and optionally static IP.
+##		- These are done within the running target system, so probably no reboot necessary from the previous step.
+##		- Make the changes
+##		- Reboot to make sure everything works.
+##	- Change SecureBoot signing key
+##		- Create new mok keys
+##		- Re-sign everything
+##		- Build new UKI EFI[s] (and to be safe for testing, Grub)
+##	- Optionally clone image to new real hardware drive
+##		- Map the physical device into the same VM as the .img file to clone.
+##		- Boot back into your rescue image, drive, or live iso.
+##		- Clone the entire updated .img file directly to the target `/dev/...` block device, using `cat`, `dd`, `pv`, or `ddrescue` etc.
+##			- Either as a source block device as already presented by the VM, or directly from the .img file.
+##			- Deal with the entire block devices, not individual partitions.
+##		- Non-destructively expand partition 2 (Luks) to fill empty space.
+##		- Non-destructively expand LVM2 (holding rpool) to fill empty space.
+##		- Import rpool and insure it auto-expands
+##		- Reboot into the new system (VM) to make sure the system works.
+##	- Optionally Enable SecureBoot on final target system
+##		- Boot into UEFI, disable secureboot
+##		- Boot into new system on new target hardware
+##		- Create new mok keys
+##		- Enroll new keys on new system
+##		- Reboot, accept new keys
+##		- Reboot again into UEFI, enable secureboot
+##		- Reboot final time, test.
+
+## Copyright and license
+## Copyright © 2026 t00mietum (ID: f⍒Ê🝅ĜᛎỹqFẅ▿⍢Ŷ‡ʬẼᛏ🜣)<br>
+## Licensed under GNU GPL v2 <https://www.gnu.org/licenses/gpl-2.0.html>. No warranty.

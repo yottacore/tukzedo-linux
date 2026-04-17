@@ -1,0 +1,1274 @@
+<!-- markdownlint-disable MD007 -- Unordered list indentation -->
+<!-- markdownlint-disable MD010 -- No hard tabs -->
+<!-- markdownlint-disable MD033 -- No inline html -->
+<!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+<div align="center">
+
+![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)
+![Lifecycle: Beta](https://img.shields.io/badge/Lifecycle-Beta-yellow)
+![Support](https://img.shields.io/badge/Support-Maintained-brightgreen)
+
+</div>
+<!--
+[![!#/bin/bash](https://img.shields.io/badge/-%23!%2Fbin%2Fbash-1f425f.svg?logo=gnu-bash)](https://www.gnu.org/software/bash/)
+![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)
+![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
+![Lifecycle: Alpha](https://img.shields.io/badge/Lifecycle-Alpha-orange)
+![Lifecycle: Beta](https://img.shields.io/badge/Lifecycle-Beta-yellow)
+![Lifecycle: RC](https://img.shields.io/badge/Lifecycle-RC-blue)
+![Lifecycle: Stable](https://img.shields.io/badge/Lifecycle-Stable-brightgreen)
+![Lifecycle: Deprecated](https://img.shields.io/badge/Lifecycle-Deprecated-red)
+![Status: Deprecated](https://img.shields.io/badge/Status-Deprecated-orange)
+![Status: Archived](https://img.shields.io/badge/Status-Archived-lightgrey)
+![Lifecycle: EOL](https://img.shields.io/badge/Lifecycle-EOL-lightgrey)
+![Coverage](https://img.shields.io/badge/Coverage-25%25-red)
+![Coverage](https://img.shields.io/badge/Coverage-50%25-orange)
+![Coverage](https://img.shields.io/badge/Coverage-75%25-yellow)
+![Coverage](https://img.shields.io/badge/Coverage-90%25-brightgreen)
+![Status: Passing](https://img.shields.io/badge/Status-Passing-brightgreen)
+![Status: Failing](https://img.shields.io/badge/Status-Failing-red)
+-->
+
+# How to install Tukzedo Linux (Debian Trixie edition)
+
+This is a recipie and intructions for creating your own Tukzedo Linux, with a Debian Trixie base.
+
+<!-- TOC ignore:true -->
+## Table of contents
+
+<!-- TOC -->
+
+- [Introduction](#introduction)
+- [Creation steps](#creation-steps)
+	- [Remaining steps to expand on and format better](#remaining-steps-to-expand-on-and-format-better)
+- [Document history](#document-history)
+- [Copyright and license](#copyright-and-license)
+
+<!-- /TOC -->
+
+## Introduction
+
+## Creation steps
+
+### Remaining steps to expand on and format better
+
+View the HTML comments below in the raw .md document. (They are in pseudo-bash format, being converted to .md)
+
+<!--
+
+####
+#### New install:
+
+	## Connect to Live CD via terminal:
+		## Live CD Terminal:
+			## Update apt and install SSH in LiveCD guest:
+			#	sudo apt purge libreoffice*; sudo apt autoremove
+				sudo apt update; sudo apt install ssh screen tmux
+			## Get IP address
+				ip a | grep "inet "
+
+	## From host terminal:
+		ssh user@ADDRESS; echo -e "\n****NO LONGER IN SSH ****\n"
+			## Password: "live"
+			## Troubleshooting? Go to: ## Troubleshooting from live CD
+
+	## If host is Windows Hyper-V:
+		## VM must be connected to an "external switch" bound and NATted to a specific host adapter.
+		## Open WSL2
+		## PowerShell [Administrator]: Allow connection to Hyper-V VM from WSL2
+			## Show interface names
+				Get-NetIPInterface | select ifIndex,InterfaceAlias,AddressFamily,ConnectionState,Forwarding | Sort-Object -Property IfIndex | Format-Table
+			## Set up forwarding (must do this from PowerShell after launching WSL2)
+				Get-NetIPInterface | where {$_.InterfaceAlias -eq 'vEthernet (WSL (Hyper-V firewall))' -or $_.InterfaceAlias -eq 'vEthernet (Default Switch)'} | Set-NetIPInterface -Forwarding Enabled
+			## References:
+				## https://github.com/microsoft/WSL/issues/4288#issuecomment-656991493
+		## Use WSL2 terminal from here on out.
+		## Troubleshooting? Go to: ## Troubleshooting from live CD
+
+	## Confirm EFI support
+		sudo dmesg | grep -i efivars
+
+	## Install prereqs
+		sudo apt install debootstrap gdisk zfsutils-linux cryptsetup lvm2  # Don't installl dracut in rescue host environment, as it may have some other rd init builder.
+
+	## Initialize working environment
+		gsettings set org.gnome.desktop.media-handling automount false
+		xhost +local:root  ## Allow CLI sudo to access RDP X diplay. E.g. 'sudo mousepad' or 'x8eds'.
+		tmux new -s setup sudo -i
+
+	## Show ZFS /etc/hostid
+		od -An -tx1 -N4 /etc/hostid  | tr -d ' '
+	## Show disk IDs
+		echo; lsblk -o NAME,MODEL,SIZE,TYPE,MOUNTPOINT,WWN,UUID,LABEL,PARTLABEL | grep -iP 'WWN|crypt|disk|lvm|part'; echo
+	## Verify 1 of 2
+		ls --color=always -lA /dev/disk/*/* | grep --color=always  "/dev/disk/by-id/wwn-0x3001237923792379"
+	## Verify 2 of 2
+		ls --color=always -lA /dev/disk/*/* | grep --color=always  "sdb"; echo
+
+
+####
+#### Set variables, functions, and settings - REQUIRED for everything below this section
+
+	## TODO: Add script to download and run helper functions from github, that used to exist in this doc.
+
+
+####
+#### Partition, LUKS, LVM, and ZFS (exactly 4KB, 8-sector aligned, for ZFS 'ashift=12')
+
+	fDriveInfo
+	fEcho_Clean; fEcho_Clean "diskTarget_wwn: '${diskTarget_wwn}'"; fEcho_Clean_Force
+	## Make new GPT table
+		fEchoPromptEval "sudo sgdisk --zap-all '${diskTarget_wwn}'; sudo partprobe; fDriveInfo"
+		fEchoPromptEval "sudo blkdiscard -f '${diskTarget_wwn}'; sudo partprobe; fDriveInfo"
+	## Partition 1: 1GB FAT32 partition at beginning for UEFI
+		fEchoPromptEval "sudo sgdisk -a 8 -n 1:1M:+1G -t 1:EF00 -c 1:UEFI_${mUID} '${diskTarget_wwn}'; sudo partprobe; fDriveInfo"
+			fEchoPromptEval "sudo mkfs.fat -F32 '${diskTarget_wwn}-part1'; sudo partprobe; fDriveInfo"
+		## Record UUID output here [do global search and replace]
+			fDriveInfo
+			uefiUUID='75CA-2532'
+	## Partition 2: Remainder LUKS
+		fEchoPromptEval "sudo sgdisk -a 8 -n 2:0:-1M -t 2:8309 -c 2:LUKS_${mUID} '${diskTarget_wwn}'; sudo partprobe; fDriveInfo"
+			fEchoPromptEval "sudo cryptsetup luksFormat --type luks2 --sector-size=4096 -c aes-xts-plain64 -s 512 -h sha256 --pbkdf argon2i '${diskTarget_wwn}-part2'; sudo partprobe; fDriveInfo"
+				## If cryptsetup fails with something like 'Device size is not aligned to requested sector size.',
+				## try '--align-payload' instead of '--sector-size' - OR - manually specify partition size in bites:
+					## --align-payload=4096 (lazy method):
+						fEchoPromptEval "sudo cryptsetup luksFormat --type luks2 --align-payload=4096 -c aes-xts-plain64 -s 512 -h sha256 --pbkdf argon2id '${diskTarget_wwn}-part2'; sudo partprobe; fDriveInfo"
+					## Manual sectors (precise and arguably better)
+						declare -i alignedSectors=$(x9calc "$(blockdev --getsz ${diskTarget_wwn}-part2) - ($(blockdev --getsz ${diskTarget_wwn}-part2) % 8) - 2048")
+						fEcho_Clean; fEcho_Clean "Old: $(blockdev --getsz ${diskTarget_wwn}-part2)"
+						fEcho_Clean "New: ${alignedSectors}"
+						fEchoPromptEval "sudo sgdisk -d 2 -a 8 -n 2:0:+${alignedSectors} -t 2:8309 -c 2:LUKS_${mUID} '${diskTarget_wwn}'; sudo partprobe; fDriveInfo"
+							fEchoPromptEval "sudo cryptsetup luksFormat --type luks2 --sector-size=4096 -c aes-xts-plain64 -s 512 -h sha256 --pbkdf argon2i '${diskTarget_wwn}-part2'; sudo partprobe; fDriveInfo"
+		## Record UUID output here [do global search and replace]
+			fDriveInfo
+			luksUUID='b121f4f6-31d7-439d-bc5c-b02581d6effb'
+		sudo cryptsetup open "${diskTarget_wwn}-part2" crypt_${mUID}; fDriveInfo
+			fd /dev/mapper
+		## Create Logical Volumes
+			fEchoPromptEval "sudo pvcreate /dev/mapper/crypt_${mUID}; sudo partprobe; fDriveInfo"
+				fEchoPromptEval "sudo vgcreate vg_${mUID} /dev/mapper/crypt_${mUID}; fDriveInfo"
+					## For bpool
+						fEchoPromptEval "sudo lvcreate -L 4G -n lv_bpool_${mUID}  vg_${mUID}; sudo partprobe; fDriveInfo"
+					## For Swap
+						fEchoPromptEval "sudo lvcreate -L ${swapSizeGB}G -n lv_swap_${mUID} vg_${mUID}; sudo partprobe; fDriveInfo"
+						fEchoPromptEval "sudo mkswap /dev/vg_${mUID}/lv_swap_${mUID}; sudo partprobe; fDriveInfo"
+							## Record UUID output here [do global search and replace]
+							swapUUID='dc38b82e-b352-4e85-b0e0-16836376a83a'
+					## For rpool
+						fEchoPromptEval "sudo lvcreate -l 100%FREE -n lv_rpool_${mUID}  vg_${mUID}; sudo partprobe; fDriveInfo"
+
+	## Create temp mount location
+		{ [[ -n "${TEMPMOUNT_BASE}" ]] && [[ ! -d "${TEMPMOUNT_BASE}" ]]; } && fEchoPromptEval "mkdir -p '${TEMPMOUNT_BASE}'"
+
+	####
+	#### Create ZFS filesystems
+
+		##	General notes (option B):
+		##		Canmount   Mountpoint  In fstab?  Description
+		##		---------  ----------  ---------  -----------
+		##		noauto ..  / ......... no ......  For "rpool_${muid}/deb/ROOT". Grub handles mounting it.
+		##		ON ....... /boot ..... no ....... For "bpool_${muid}/deb/BPOOL". Required for Grub.
+		##		off ...... none ...... no ......  For "rpool_${muid}/deb". The only reason this dataset level exists is because ZFS can't cascade mount all children from a pool, only a dataset. Mount to / in fstab, which will be ignored at the filesystem level (won't conflict with later dataset mounted to "/"), but will trigger mounting of all children.
+		##		off ...... none ...... no ....... Also for third-level child datasets that act merely as property inheritance containers for children.
+		##		ON ....... [path] .... no ....... For all other datasets that get mounted to directories, other than "/".
+		##	Grub requires rpool::bootfs property to be set to "rpool_${mUID}/deb/ROOT"
+
+		## The order of creation here is very important.
+
+
+		## Root pool
+			fZfsCreatePool  "rpool_${mUID}"  none  "${TEMPMOUNT_BASE}"  "/dev/vg_${mUID}/lv_rpool_${mUID}"
+				fZfsCreateDataset  "rpool_${mUID}/deb"                                        none                        off        y          ## As mentioned in notes above, this level exists ONLY because a dataset mount can cascade to children in /etc/fstab, not a pool. So we mount this to '/' in /etc/fstab, which will cause ALL children with 'noauto' to mount. But the true definition for '/' further down won't conflict.
+				fZfsCreateDataset  "rpool_${mUID}/deb/ROOT"                                   /                           noauto
+
+		## Boot pool (with safe minimal features for Grub)  ## Must be mounted after / when doing manual work.
+			fZfsCreatePool  bpool_${mUID}  none  "${TEMPMOUNT_BASE}"  "/dev/vg_${mUID}/lv_bpool_${mUID}"
+				fZfsCreateDataset    "bpool_${mUID}/deb"           none   off
+				fZfsCreateDataset    "bpool_${mUID}/deb/BOOT"      /boot  on
+				fZfsListProps_Mount; fMount_ListZfs; fZfsListUnmountedThatShould
+
+		## Continue with Root pool
+				fZfsCreateDataset  "rpool_${mUID}/deb/imperm"                                 none                        off        FALSE
+				fZfsCreateDataset  "rpool_${mUID}/deb/imperm/tmp"                             /tmp                        on
+				fZfsCreateDataset  "rpool_${mUID}/deb/imperm/var_tmp"                         /var/tmp                    on
+				fZfsCreateDataset  "rpool_${mUID}/deb/imperm/var_spool"                       /var/spool                  on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist"                                none                        off        y
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/etc_opt"                        /etc/opt                    on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/home"                           /home                       on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/opt"                            /opt                        on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/root"                           /root                       on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/srv"                            /srv                        on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/usr_local"                      /usr/local                  on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/var_lib"                        /var/lib                    on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/var_mail"                       /var/mail                   on
+				fZfsCreateDataset  "rpool_${mUID}/deb/persist/var_www"                        /var/www                    on
+
+				fZfsListProps_Mount; fMount_ListZfs; fZfsListUnmountedThatShould
+
+				## Encrypted home #1
+				fEchoPromptEval "sudo mkdir -p '${TEMPMOUNT_BASE}/home/${USER}'"
+				fEchoPromptEval "sudo zfs create -o encryption=aes-256-gcm -o keyformat=passphrase -o pbkdf2iters=600000 -o mountpoint=/home/${USER} -o canmount=noauto 'rpool_${mUID}/deb/persist/home/${USER}' && sudo zfs mount 'rpool_${mUID}/deb/persist/home/${USER}'"
+					fZfsCreateDataset  "rpool_${mUID}/deb/persist/home/${USER}/.cache"     /home/${USER}/.cache      on     FALSE
+					fZfsCreateDataset  "rpool_${mUID}/deb/persist/home/${USER}/seafile"    /home/${USER}/seafile     on
+					fZfsCreateDataset  "rpool_${mUID}/deb/persist/home/${USER}/tmp"        /home/${USER}/tmp         on     FALSE
+					fZfsCreateDataset  "rpool_${mUID}/deb/persist/home/${USER}/var"        /home/${USER}/var         on     FALSE
+				fZfsListProps_Mount; fMount_ListZfs; fZfsListUnmountedThatShould
+				fEchoPromptEval "sudo chown -R ${USER}:${USER} '${TEMPMOUNT_BASE}/home/${USER}'"
+
+		## Set misc properties
+			## Necessary for a root filesystem as well as debbootstrap (20260222-112935: I DON'T THINK THIS IS TRUE - AND IS A SECURITY CONCERN. Must be bad information from some source, don't do this.)
+			#	fEchoPromptEval "fEcho_Clean; fEcho_Clean 'BEFORE:'; zfs get devices 'rpool_${mUID}/deb/ROOT'; mount | grep 'on ${TEMPMOUNT_BASE} '; sudo zfs set devices=on 'rpool_${mUID}/deb/ROOT'; fEcho_Clean_Force; fEcho_Clean 'AFTER:'; zfs get devices 'rpool_${mUID}/deb/ROOT'; mount | grep 'on ${TEMPMOUNT_BASE} '; fEcho_Clean_Force"
+
+		## Set properties for Grub (critical; this might need to be 'zfs set' rather than 'zpool set', if the latter fails.
+			fEchoPromptEval "sudo zpool set bootfs=rpool_${mUID}/deb/ROOT rpool_${mUID}" && { fEcho; zpool get bootfs rpool_${mUID}; fEcho_Force; }
+		## This is an older Grub requirement, but presumably harmless for newer versions
+			fEchoPromptEval "sudo zfs set org.zfsonlinux:bootfs=yes rpool_${mUID}/deb/ROOT" && { fEcho; zfs get org.zfsonlinux:bootfs rpool_${mUID}/deb/ROOT; fEcho_Force; }
+
+		## Set permissions
+			fEchoPromptEval "sudo chmod -R  755 '${TEMPMOUNT_BASE}' 2>/dev/null"
+			fEchoPromptEval "sudo chmod -R  700 '${TEMPMOUNT_BASE}/root'"
+			fEchoPromptEval "sudo chmod -R  750 '${TEMPMOUNT_BASE}/home'"
+			fEchoPromptEval "sudo chmod -R 1777 '${TEMPMOUNT_BASE}/tmp'"
+			fEchoPromptEval "sudo chmod -R 1777 '${TEMPMOUNT_BASE}/var/tmp'"
+
+		## Show various info (one at a time)
+			fZfsListProps_AutoSnapshot
+			fZfsListProps_Mount; fMount_ListZfs; fZfsListUnmountedThatShould
+			fZfsListExpectedOnDiskDirs
+			fEcho; sudo find "${TEMPMOUNT_BASE}" -type d 2>/dev/null | sort; fEcho_Force
+
+		## Install system files
+		sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1; sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1  ## Prevent apt from using IPv6, which may stall forever.
+		sudo debootstrap  --arch=amd64  --no-check-gpg  --variant=minbase  trixie "${TEMPMOUNT_BASE}" 'http://ftp.debian.org/debian'
+			## fEchoPromptEval "sudo debootstrap --keyring=/usr/share/keyrings/debian-archive-keyring.gpg trixie '${TEMPMOUNT_BASE}' 'http://deb.debian.org/debian'"
+			## fEchoPromptEval "sudo debootstrap  --verbose  --arch=amd64  --no-check-gpg  --include=ca-certificates  trixie "${TEMPMOUNT_BASE}"  'http://deb.debian.org/debian'
+
+
+####
+#### Troubleshooting at this stage
+
+	## If any mountpoints show up in fZfsListProps_Mount but don't actually exist on-disk, you are likely caught in a loop of:
+	##	- A sub-filesystem automounted at that location, but no existing directory exists to mount to. So ZFS shows it as mounted, but it's not visible.
+	##		- This can happen, for example:
+	##			- If rpool and bpool are mounted out of order. (When debugging in a rescue environment for creation or repair, mount rpool first, then bpool.) Or,
+	##			- If e.g. /etc/opt mounts, but the 'noauto' rootfs isn't mounted yet.
+	##	- Easy fix:
+	##		1) Mount the root filesystem.
+	##		2) Create the missing directory.
+	#
+	##	- You should immediately notice that either contents show up there, or at least the mointpoint hasn't changed (if there were never contents).
+	##	- When working in a rescue host environment (e.g. live CD or a different working system), make sure the directories you create are in rpool '/' filesystem, NOT the underlying filesystem.
+	##		- If some empty ones get created in the underlying filesystem anyway along the way, it's probably OK.
+
+	## Show redundant mountpoints (look for >1 in first column sorted at top; multiple at "${TEMPMOUNT_BASE}" is OK.)
+		fEcho_Clean_Force; zfs list -t filesystem -o mountpoint | grep -Pv 'MOUNTPOINT|none' | sort | uniq -c | sort -nr; fEcho_Clean_Force
+
+	## Unmount everything and export pool ****WARNING: May interrupt progress if a reboot is requird to cleanly unmount ****
+		fZfsForceUnmountAndExport
+
+	## To import without mounting anything at all:
+		sudo zpool status  ## Make sure nothing is imported.
+		sudo zpool import  ## Make sure the pool to import is available.
+		fEchoPromptEval "sudo zpool import -N rpool_${mUID}"
+		fEcho_Clean; sudo zpool status; fEcho_Clean_Force; fZfsListProps_Mount
+
+	## To mount everything
+		fMountFilesystems
+
+	## Show datasets that should be listed as 'yes' for 'mounted', but aren't:
+		fZfsListProps_Mount
+		fZfsListUnmountedThatShould
+
+	## If snapshot properties are explicit and not inherited, reapply:
+		fZfsListProps_AutoSnapshot
+		## Override fZfsCreateDataset() and run the "creation" commands above again:
+			fZfsCreateDataset(){
+				[[ -n "${4}" ]] && { fEcho "Property 'com.sun:auto-snapshot' on dataset '${1}' is defined to be set to '${4}', ignoring."; return 0; }
+				fEcho "Setting 'inherit' for property 'com.sun:auto-snapshot' on dataset '${1}' ..."
+				sudo zfs inherit com.sun:auto-snapshot=true "${1}"
+			}
+			## Plus
+				sudo zfs inherit com.sun:auto-snapshot=true "rpool_${mUID}/deb/persist/home/${USER}"
+
+	## If canmount properties need to be redone:
+		fZfsListProps_Mount
+		## Override fZfsCreateDataset() and run the "creation" commands above again:
+			fZfsCreateDataset(){
+				[[ -z "${3}" ]] && { fEcho "No 'canmount' setting specified; ignoring."; return 0; }
+				[[ !  "${3}" =~ 'on'|'off'|'noauto' ]] && { fThrowError "Incorrect value for 'canmount': '${3}'."; return 1; }
+				fEcho "Setting 'canmount=${3}' on dataset '${1}' ..."
+				sudo zfs set canmount=${3} "${1}"
+			}
+			## Plus
+				sudo zfs set canmount=noauto "rpool_${mUID}/deb/persist/home/${USER}"
+
+	## Close LUKS (and LVM)
+		sudo cryptsetup close crypt_${mUID}
+
+	## To destroy and start over:
+		## ****WARNING: WILL BACKTRACK ALL ZFS PROGRESS****
+			fZfsForceUnmountAndExport
+			fEchoPromptEval "sudo zpool import -N rpool_${mUID}"
+			fEcho_Clean; sudo zpool status; fEcho_Clean_Force; fZfsListProps_Mount
+			fEchoPromptEval "sudo zpool destroy -f rpool_${mUID}"  #; zpool destroy -f bpool
+			echo -e "\nzpool status:\n$(zpool status 2>&1)\n\nzpool import:\n$(zpool import 2>&1)\n"; fEcho_ResetBlankCounter
+			fEchoPromptEval "sudo rm -rf '${TEMPMOUNT_BASE}'; mkdir -p '${TEMPMOUNT_BASE}'"
+		## / ****WARNING****
+
+
+####
+#### If LUKS, LVM, and ZFS already set up and you need to mount and resume:
+
+	## Follow steps in fEnterChroot() above, up to and/or including actually entering chroot.
+
+
+####
+#### Prepare for and enter chroot
+
+	fEnterChroot
+
+
+####
+#### ONCE IN CHROOT (whether continuing installation or for troubleshooting):
+
+	## TODO: Add script to download and run helper functions from github, that used to exist in this doc.
+
+
+####
+#### Continue install inside chroot (or skip if already installed and are troubleshooting and/or resuming)
+
+	apt update && apt upgrade
+
+	## This is probably a minimal system and needs some basics.
+
+		## Minimally configure:
+			## Install stuff
+				apt install aptitude autoconf automake btrfs-progs build-essential checkinstall cifs-utils console-data console-setup curl diffutils dkms dosfstools dpkg-dev exfatprogs exfat-fuse firmware-linux gcc gdisk gettext git htop keyboard-configuration locales lvm2 lz4 make man manpages-pl mc moreutils nano ntfs-3g p7zip-full parted pv qalc rsync samba screen smbclient ssh sshfs subversion sudo symlinks systemd-timesyncd trash-cli tzdata ufw uuid util-linux vbindiff wireless-tools wget xattr xxd zip
+				## rar
+			## Fix hostname
+				export HOSTNAME=${mUID}; hostname $HOSTNAME
+				echo "${HOSTNAME}" > /etc/hostname; nano /etc/hostname
+				echo -e "127.0.0.1  localhost\n127.0.0.1  ${HOSTNAME}\n127.0.0.1  ${chrootHostHostname}\n::1    localhost ip6-localhost ip6-loopback\n" >> /etc/hosts; nano /etc/hosts
+
+			## Configure locales
+				sudo dpkg-reconfigure -plow locales tzdata keyboard-configuration console-setup
+					##	Locales to be generated .....................: 97. en_US.UTF-8 UTF-8
+					##	Default locale for the system environment ...:  3. en_US.UTF-8
+					##	Geographic area .............................:  2. Americas
+					##	Time Zone ...................................: 86. Los_Angeles
+					##	Keyboard model ..............................: 66. Generic 101-key PC
+					##	Keyboard layout .............................:  1. English (US)
+					##	Key to function as AltGr ....................:  2. No AltGr key
+					##	Compose key .................................:  1. No compose key
+					##	Encoding to use on the console ..............: 27. UTF-8
+					##	Character set to support ....................: 14. # Latin1 and Latin5 - western Europe and Turkic languages
+					##	Font for the console ........................:  5. TerminusBold
+					## 	Fint size ...................................:  2. 18x16
+				unset LANG LC_ALL; source /etc/default/locale && { echo; locale; }
+				[[ -z "${LANG}"   ]] && export LANG='en_US.UTF8'; [[ -z "${LC_ALL}" ]] && export export LC_ALL='en_US.UTF8'; fEcho; locale; fEcho_Force
+
+		## /etc/fstab
+			filePath="/etc/fstab"  #; sudo nano "${filePath}"
+				sudo tee "${filePath}" <<- EOF_t2mfv
+					## UEFI at /boot/efi, AFTER zpools mount so that /boot doesn't overshadow /boot/efi.
+					UUID=${uefiUUID}               /boot/efi                             vfat    defaults,noatime,x-systemd.after=zfs-import.target    0 2
+
+					## Swap partition
+					UUID=${swapUUID}               none                                  swap    sw     0 0
+				EOF_t2mfv
+				sudo nano "${filePath}"
+
+		## Allow root login (important for recovery if grub/boot fails)
+			sudo passwd root  ## Same as sysadmin
+			sudo usermod -aG sudo root
+
+		## Install basic servers and security
+			sudo apt install ssh samba ufw fail2ban
+			sudo ufw allow SSH ; sudo ufw allow Samba ; sudo ufw reload
+			## Allow root via SSH if manually installing via debootstrap
+				sudo nano /etc/ssh/sshd_config
+					## Add underneath '#PermitRootLogin prohibit-password':
+						PermitRootLogin Yes
+						KbdInteractiveAuthentication Yes
+				sudo systemctl restart ssh
+			## Security
+				sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+				sudo systemctl enable fail2ban ; sudo systemctl start fail2ban
+
+		## For root-on-ZFS: Don't autoremove old kernels:
+			filePath="/etc/apt/apt.conf.d/99-no-autoremove-kernels"  #; sudo nano "${filePath}"
+				sudo tee "${filePath}" <<- EOF_t2phn
+					APT::NeverAutoRemove {
+						"linux-image-.*";
+						"linux-headers-.*";
+					};
+				EOF_t2phn
+				sudo nano "${filePath}"
+
+	## Update sources and install some more basics, including ZFS.
+		[[ -f /etc/apt/sources.list.bak ]] && sudo rm  /etc/apt/sources.list.bak
+		[[ -f /etc/apt/sources.list     ]] && sudo mv  /etc/apt/sources.list  /etc/apt/sources.list.bak
+		filePath="/etc/apt/sources.list"  #; sudo nano "${filePath}"
+			sudo tee "${filePath}" <<- EOF_t2phq
+				deb http://deb.debian.org/debian trixie main contrib non-free-firmware non-free
+				deb-src http://deb.debian.org/debian trixie main contrib non-free-firmware non-free
+
+				deb http://deb.debian.org/debian trixie-updates main contrib non-free-firmware non-free
+				deb-src http://deb.debian.org/debian trixie-updates main contrib non-free-firmware non-free
+
+				deb http://security.debian.org/debian-security/ trixie-security main contrib non-free-firmware non-free
+				deb-src http://security.debian.org/debian-security/ trixie-security main contrib non-free-firmware non-free
+
+				# Backports allow you to install newer versions of software made available for this release
+				deb http://deb.debian.org/debian trixie-backports main contrib non-free-firmware non-free
+				deb-src http://deb.debian.org/debian trixie-backports main contrib non-free-firmware non-free
+			EOF_t2phq
+			sudo nano "${filePath}"
+
+		## Install full suite of headless system, including ZFS modules (some may be already installed and ignored, some might be upgraded).
+			fMakeDir /var/lib/dpkg
+			fMakeDir /var/lib/apt/lists
+			fMakeDir /var/cache/apt/archives/partial
+			sudo touch /var/lib/dpkg/status
+			sudo apt update && sudo apt upgrade && sudo sudo apt install apt-transport-https apt-utils aptitude autoconf automake bindfs bmon btrfs-progs build-essential ca-certificates checkinstall cifs-utils cmatrix colordiff console-data console-setup coreutils cowsay cryptsetup curl debootstrap diffutils dirmngr dkms bind9-dnsutils dosfstools dpkg-dev dracut dracut-core dracut-network e2fsprogs encfs equivs espeak exfat-fuse exfatprogs fail2ban figlet firmware-linux firmware-linux-nonfree fortune-mod gawk gcc gdisk gettext git grub2-common grub-efi-amd64 htop ifupdown inotify-tools intltool ioping iotop iproute2 iputils-ping isc-dhcp-client keyboard-configuration libaa-bin libc-bin liblz4-dev libssl-dev libtool-bin linux-headers-$(uname -r) linux-headers-amd64 linux-image-amd64 locales logrotate lolcat lvm2 lz4 make man-db manpages-pl mc moreutils mtools nano net-tools netcat-openbsd ntfs-3g parallel p7zip-full parted pv python3-btrfsutil qalc rng-tools rsync samba schroot screen shellcheck smartmontools smbclient ssh sshfs subversion sudo symlinks systemd systemd-resolved systemd-timesyncd tmux toilet traceroute trash-cli tzdata ufw uuid vbindiff wget wireless-tools xattr xxhash xxd zfs-auto-snapshot zfs-dkms zfs-dracut zfsutils-linux zip
+			## Configure DNS resolution
+				nano /etc/systemd/resolved.conf
+				ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+				systemctl enable systemd-resolved && systemctl start systemd-resolved
+				ping google.com
+
+	## Create a systemd machine-id (no harm to re-do even if it's already unique):
+		fEcho_Force; fEcho_Clean "Existing /etc/machine-id:"; cat /etc/machine-id; fEcho_Force; fEchoPromptEval "sudo rm -f /etc/machine-id ; sudo systemd-machine-id-setup"; cat /etc/machine-id; fEcho_Force
+
+	## Read unique ZFS /etc/hostid, write new one if necessary (installing ZFS probably already did this, don't overwrite if so)
+		fEcho_Clean; fEcho_Clean "Unique ZFS ID:"; od -An -tx1 -N4 /etc/hostid | tr -d ' '; fEcho_Clean_Force
+			## Set this value with a global search and replace:
+				zfsHostID_NewSystem='f1f2ad22'
+			## If you need to write a new value:
+				fEchoPromptEval "echo -n '${zfsHostID_NewSystem}' | xxd -r -p > /etc/hostid  ## Write hex to uniques binary ZFS /etc/hostid"
+				## Then read it back out with first command above in this block.
+
+	## Misc system
+		filePath="/etc/sysctl.d/jc_conf1"  #; sudo nano "${filePath}"
+			sudo tee "${filePath}" <<- EOF_t2pj3
+				## Stop low-level messages polluting the console
+				kernel.printk = 3 4 1 3
+			EOF_t2pj3
+			sudo nano "${filePath}"
+
+
+##
+##
+#### Install and configure dracut (removing initramfs-tools), EFI, and Grub
+
+	## Note: Be VERY careful from now until forever, to NEVER ALLOW `initramfs-tools` TO BE PULLED IN AS A DEPENDENCY.
+	##       If this happens accidentally, it will hose your setup and make life a living hell, requiring booting into
+	##       a rescue image and chroot, and potentially hours of hair-pulling to recover. Fortunately, initramfs-tools
+	##       is eventually going away, and everything will be all-dracut; so the need for this vigilance should reduce
+	##       to zero over time.
+
+	## (After basic installation and config in chroot, above)
+
+	## Verify that LUKS UUID matches $luksUUID.
+		blkid | grep 'crypto_LUKS' | grep -iPo ' UUID="[0-9a-f\-]+"' | grep -iPo '"[0-9a-f\-]+"' | grep -iPo '[0-9a-f\-]+'
+	## Double-check LVM vg name:
+		vgs --noheadings -o vg_name | tr -d ' '
+
+	## ZFS config (this could be redundant)
+	#	filePath="/etc/dkms/zfs.conf"  #; sudo nano "${filePath}"
+	#		sudo tee "${filePath}" <<- EOF_t2pj6
+	#			REMAKE_INITRD=yes
+	#		EOF_t2pj6
+	#		sudo nano "${filePath}"
+
+	## ZFS services (actually don't risk messing with these)
+	#	systemctl enable  zfs.target
+	#	systemctl disable zfs-import-cache
+	#	systemctl mask zfs-import-cache  ## Important
+	#	systemctl enable  zfs-import-scan
+	#	systemctl enable  zfs-mount
+	#	systemctl enable  zfs-import.target
+
+	## Replace update-initramfs with dracut, and install ZFS dependencies; you can't have dracut and 'legacy' initramfs-tools installed at the same time.
+		sudo apt update
+		sudo apt install cryptsetup lvm2 dracut dracut-core dracut-network zfs-dkms zfs-dracut zfsutils-linux zfs-auto-snapshot  ## This will also necessarily force the removal of initramfs-tools.
+		sudo apt purge initramfs-tools mdadm && sudo apt autoremove  ## Clean out cruft.
+			## Ditching mdadm because for unrelated reasons it tends to hang boot before ZFS modules are loaded. And with ZFS, odds are a lower you don't need mdadm anyway.
+		sudo apt install cryptsetup lvm2 dracut dracut-core dracut-network zfs-dkms zfs-dracut zfsutils-linux zfs-auto-snapshot  ## This will also necessarily force the removal of initramfs-tools.
+		sudo dkms autoinstall -k $(uname -r)
+		## Make sure LUKS and LVM modules are included in boot initrd
+			filePath="/etc/dracut.conf.d/00-force-generic.conf"  #; sudo nano "${filePath}"
+				sudo tee "${filePath}" <<- EOF_t2fdh
+					## The following two lines are suboptimal, but required as a blunt fix for ZFS boot issues.
+					hostonly=no
+					hostonly_cmdline=no
+					use_fstab=no
+
+					## Set to yes instead for automatic drive driver discovery/inclusion, e.g. NIC. But can and almost certainly will prevent booting on ZFS.
+					#hostonly=yes
+					#hostonly_cmdline=yes
+					#use_fstab=yes
+
+					## Luks, LVM, ZFS
+					add_dracutmodules+=' crypt lvm zfs '
+					force_dracutmodules+=' crypt lvm zfs '
+					install_items+=' /sbin/cryptsetup /sbin/lvm /sbin/vgchange /sbin/zpool /sbin/zfs '
+
+					## USB boot
+					add_drivers+=' ext4 '
+
+					## Add common network drivers
+					add_drivers+=' virtio_net virtio_pci '
+					add_drivers+=' e1000 e1000e igb ixgbe '
+					add_drivers+=' atlantic '
+					add_drivers+=' tg3 bnx2 bnx2x '
+					add_drivers+=' i40e ice iavf '
+					add_drivers+=' iwlwifi iwlmvm ath9k ath10k_pci ath11k '
+
+					## Drivers that fail, leave commented out
+					#add_drivers+=' r8169 r8168 '
+
+					## If not booting over a SAN, which is rare
+					omit_dracutmodules+=' iscsi '
+
+					## Permanently disable mdadm / mdraid, which screws up ZFS booting.
+					omit_dracutmodules+=' mdraid mdraid-cleanup '
+					omit_drivers+=' raid0 raid1 raid10 raid456 '
+				EOF_t2fdh
+				sudo nano "${filePath}"
+				rm -f /etc/dracut.conf.d/*mdadm*.conf
+				rm -f /etc/dracut.conf.d/*mdraid*.conf
+				rm -f /etc/dracut.conf.d/*zfs*.conf
+				rm -f /etc/dracut.conf.d/*lvm*.conf
+			filePath="/etc/dracut.conf.d/zz-overrides.conf"  #; nano "${filePath}"
+				sudo tee "${filePath}" <<- EOF_t2pn1
+					## This makes dracut use traditional '/boot/' for initrd rather than '/boot/[machine-id]/', Which is required for ZFS.
+					## 'uefi=no' doesn't necessarily mean it's not EUFI, it just may help bypass the [machine-id] crap.
+					machine_id=no
+					#outputdir=/boot
+					#uefi=no
+				EOF_t2pn1
+				nano "${filePath}"
+		#	filePath="/etc/kernel/install.conf"  #; nano "${filePath}"
+		#		sudo tee "${filePath}" <<- EOF_t2pne
+		#			layout=grub
+		#			BOOT_ROOT=/boot
+		#		EOF_t2pne
+		#		nano "${filePath}"
+			filePath="/etc/kernel-img.conf"  #; nano "${filePath}"
+				sudo tee "${filePath}" <<- EOF_t2sv2
+					INITRAMFS=dracut
+				EOF_t2sv2
+				nano "${filePath}"
+			filePath="/usr/lib/dracut/modules.d/99zfs-force-import/module-setup.sh"  #; nano "${filePath}"
+				fMakeDir "$(dirname "${filePath}")"
+				sudo tee "${filePath}" <<- EOF_t2swq
+					#!/bin/bash
+					check() { return 0; }
+					depends() { echo zfs; }
+					install() { inst_hook initqueue/settled 10 "$moddir/force-import.sh"; }
+					#install() { inst_hook pre-mount 10 "$moddir/force-import.sh"; }
+					#install() { inst_hook cmdline 99 "$moddir/force-import.sh"; }
+				EOF_t2swq
+				chmod +x "${filePath}"
+				nano "${filePath}"
+			filePath="/usr/lib/dracut/modules.d/99zfs-force-import/force-import.sh"  #; nano "${filePath}"
+				sudo tee "${filePath}" <<- EOF_t2swr
+					#!/bin/sh
+					## Manually import bpool just in case it doesn't auto-import
+					/sbin/zpool import -f bpool_${mUID} || true
+				EOF_t2swr
+				chmod +x "${filePath}"
+				nano "${filePath}"
+			update-alternatives --install /usr/sbin/mkinitramfs mkinitramfs /usr/bin/dracut 50
+			update-alternatives --set mkinitramfs /usr/bin/dracut
+
+	## Install Grub
+		sudo chmod 1777 /tmp /var/tmp
+		sudo apt update && sudo apt install grub-efi-amd64 grub2-common
+		## Edit grub config
+			filePath="/etc/default/grub"  #; nano "${filePath}"
+				sudo tee "${filePath}" <<- EOF_t2pmp
+
+					## Move these to relevant sections above.
+					GRUB_ENABLE_CRYPTODISK=y
+					GRUB_DEFAULT="1>2"
+					GRUB_TIMEOUT=5
+					GRUB_RECORDFAIL_TIMEOUT=5
+					GRUB_PRELOAD_MODULES="luks2 lvm zfs part_gpt"
+					GRUB_CMDLINE_LINUX="rd.luks.name=${luksUUID}=crypt_${mUID} rd.luks.key=/etc/cryptkeys/${mUID}.key rd.lvm.lv=vg_${mUID}/lv_rpool_${mUID}  root=ZFS=rpool_${mUID}/deb/ROOT"
+					GRUB_CMDLINE_LINUX_DEFAULT="consoleblank=0  mitigations=off  init_on_alloc=0  zswap.enabled=1 zswap.compressor=zstd zswap.zpool=zsmalloc  loglevel=3"
+				EOF_t2pmp
+				nano "${filePath}"
+
+	## Create two additional LUKS2 keyslots
+		sudo cryptsetup luksDump ${diskTarget_wwn}-part2
+		## Older algo for Grub compatibility (which as of 2026-02-23 still can't reliably handle Argon2i even though it claims to be able to as of v ):
+			fEchoPromptEval "sudo cryptsetup luksAddKey --pbkdf pbkdf2 --hash sha256  '/dev/disk/by-uuid/${luksUUID}'"
+				## Can use same password as initial setup, or change the original one. Either way, this will be the one that gets you through Grub.
+	#	## Create stage 2 keyfile, to be used by initrd to automatically unlock after Grub handoff, so you don't have to enter luks password twice:
+	#		fMakeDir "/etc/cryptkeys"
+	#		fEchoPromptEval "sudo dd if=/dev/urandom of=/etc/cryptkeys/${mUID}.key bs=64 count=1  &&  sudo chmod 0400 /etc/cryptkeys/${mUID}.key"
+	#			fd "/etc/cryptkeys/${mUID}.key"
+	#			fEcho_Clean; od -An -tx1 "/etc/cryptkeys/${mUID}.key" | tr -d ' \n'; fEcho_Clean_Force '\n'
+	#		fEchoPromptEval "sudo cryptsetup luksAddKey  --pbkdf argon2id  '/dev/disk/by-uuid/${luksUUID}'  '/etc/cryptkeys/${mUID}.key'"
+	#		fEcho; sudo cryptsetup luksDump ${diskTarget_wwn}-part2; fEcho_Force
+	#		filePath="/etc/dracut.conf.d/20-cryptkey.conf"  #; nano "${filePath}"
+	#			sudo tee <<- EOF_t2qbd
+	#				install_items+=" /etc/cryptkeys/${mUID}.key "
+	#			EOF_t2qbd
+	#			nano "${filePath}"
+		## Back up keyfile
+
+	## Bake everything in
+		## Only run `grub-install` once, unless to solve a specific problem. (A few things do get permanently baked in that only a reinstall can fix.)
+		## This creates the EFI boot files and installs the signed boot shim.
+			if findmnt /boot/efi; then  ## Make sure it's mounted.
+				fMakeDir "/boot/efi/EFI"  ## Be careful, you probably don't need to do this.
+				fEchoPromptEval "sudo grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Debian-${mUID} --recheck --no-floppy"
+					## If this fails, ultimately because you can't convince Grub that it's really a valid FAT32 target, you may have to run this command from the host environment after a reboot, and with temporary EFI mount as the target.
+					## But this may cause unfixable problems later with baked-in values here that can't be changed later. So do what you can do get mounting order issues sorted out so this works.
+				efibootmgr -v  ## See what EFI manager thinks is installed. (Which isn't necessarily the same as .EFI image files.)
+					## Delete an entry: efibootmgr -b XXXX -B
+			fi
+		fRebuild_Dracut
+		update-grub
+
+
+####
+#### Exit chroot, unload the ZPool, import with no mounts to reset spl.spl_hostid, mount, and cache settings, then reboot or power off
+
+	exit
+	fPrepareZfsForReboot
+	nohup bash -c "sleep 4; sudo reboot" & disown; exit
+
+
+####
+#### FYI: Boot process:
+
+	Notes:
+		- Before troubleshooting, it can be invaluable to understand in more detail what's actually going on during the boot process.
+		- 'initrd' and 'initramfs' mean the same thing on Linux kernels >= 2.6: "Initial RAM filesystem". Although dracut uses the older term 'initrd', and other toolings use the more accurate 'initramfs' and name image files accordingly, they both now behave the same way. On-disk, the initrd.img-* file(s) are just image image files of contents that will be copied to an in-memory file system. In pre-2.6 days it used to be a literal "ramdisk" block device. Nowadays it's a lighter-weight memory "filesystem".
+
+	- UEFI
+		- A complex process and essentially its own pre-OS that continues to provide some services even after boot.
+		- The short version:
+			- Handles some pre-boot security tasks
+			- Finds grubx64.efi, bootmgfw.efi for Windows, or shim.efi for Secure Boot.
+			- Grub is executed via grubx64.efi or shim.efi.
+	- Grub:
+		- Notes:
+			- This is not a "linux" environment.
+			- Nothing can be handed off to initramfs other than unvalidated parameters in GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT.
+			- Grub loads its own custom (and often outdated) LUKS, LVM, and ZFS modules.
+		- Prompts the user for the LUKS PBKDF2 passphrase.
+			- It will try this passphrase against all keyslots it can recognize, until one works.
+		- Unlocks LUKS in it's own temporary environment.
+		- Scans LVM logical volumes, and finds ZFS pools.
+			- Note: It is told which LVs to scan from information hard-coded at install time via `grub-install`. If that information changes, `grub-install` may need to be run again.
+		- Scans the contents of readable ZFS filesystems (e.g. backward-compatiable bpool), using it's own legacy ZFS code. Doesn't actually mount anything.
+		- When it finds the selected kernel version (and corresponding initramfs image file) inside the ZFS bpool, it loads both into memory, and executes the kernel.
+			- The parameters in GRUB_CMDLINE_LINUX + GRUB_CMDLINE_LINUX_DEFAULT are passed to the kernel, without Grub's knowledge of what they are or do.
+		- Grub jumps to a predefined entry point in the Linux kernel, effectively ending itself. No resources (e.g. memory, LUKS, or ZFS) are "closed" or "freed", they just become irrelevant.
+	- Linux Kernel and initramfs:
+		- The kernel reinitializes the CPU, MMU, and other hardware, and becomes "linux".
+			- Anything Grub did is now gone, other than loading the kernel and giving it a memory location to preserve for the loaded initramfs image.
+		- Notes:
+			- Anything that happens from here on - e.g. unlocking LUKS again and mounting ZFS pools - needs to be handled by modules and scripts pre-baked in the initramfs image (e.g. by the dracut end-user tool).
+			- The user will either need to enter a LUKS password again, OR it can be unlocked automatically via a second keyfile-based LUKS keyslot, with the keyfile baked into the initramfs image.
+				- If the initramfs image file, stored on /boot, is also included inside the LUKS volume (that Grub loads into memory for the kernel upon first unlock), this is technically a secure option.
+		- Creates a ramfs filesystem, extracts the initramfs image file to it, then discards the no-longer needed initramfs image source file from memory.
+		- While in this case, initramfs was built with dracut user tools, dracut is not part of the "executable" per-se.
+			- The dracut initramfs build process does however embed dracut-created /init scripts in the initramfs, for example that interpret 'rd.*' style Grub parameters.
+		- Executes a basic init system (whatever is installed, e.g. systemd), that mounts your basic working linux OS at /sysroot, to accomplish early boot tasks - such as loading drivers, mounting filesystems, etc.
+			- This is where ZFS filesystems are mounted, and /etc/fstab is read. All rooted at `/`. Including:
+				- All ZFS automount mountpoints, including `/boot`, will be arbitrarily mounted by at any time according to systemd dependencies and timing.
+					- They won't be actually available until an underlying directory exists for them to overlay. (I.e. until `/` exists.)
+				- Mountpoints in `/etc/fstab` (e.g. `/boot/efi` and swapfiles and/or partitions) are mounted according to systemd dependencies and timing.
+				- Dracut scripts manually mounts `/` only when by it's own logic, is the right time.
+		- Once that is complete, the kernel executes a `pivot_root` operation to make `/` the working root filesystem.
+		- Init-based (e.g. systemd) booting continues, including loading a graphical interface.
+
+
+####
+#### Troubleshoot
+
+	## Boot to good rescue environment
+	## Run steps in section "Set variables, functions, and settings" above.
+	## Run steps in section "If LUKS, LVM, and ZFS already set up" above.
+	## Run steps in section "Chroot option 2 of 2" above.
+
+	## Check dependencies in initrd.
+	fEcho_Clean; fCheckModule  "/boot/initrd.img-$(uname -r)"  "dm-crypt cryptsetup lvm zfs-import sbin/zpool sbin/zfs parse-zfs.sh zfs.ko zfs-import-scan.service etc/cryptkeys/${mUID}.key force-import.sh ext4"  ## etc/crypttab lvm-wait.conf
+
+	echo; fd /usr/lib/dracut/modules.d/ | grep -iP 'crypt|lvm|zfs'; echo
+	d /etc/dracut.conf.d/
+		nano /etc/dracut.conf.d/10-zfs.conf
+
+	## ZFS properties
+		echo; zpool get all | grep -i boot; echo
+			## If necessary: zpool set  bootfs=rpool_${mUID}/deb/ROOT  rpool_${mUID}
+		echo; zfs get all -t filesystem | grep -i boot; echo
+			## If necessary: zfs set  org.zfsbootmenu:bootfs=1  rpool_${mUID}/deb/ROOT
+		zpool set cachefile=none rpool_${mUID}
+			## Use scan-based pool discovery, though this setting is not persistent.
+		zfs get -t filesystem org.zfsbootmenu:commandline
+			## Should be none set on any
+
+	## Test if dracut is installing ZFS modules
+		dracut --force -v /tmp/test-initrd $(uname -r) 2>&1 | grep -iP 'zfs|conf|creating|output|initrd|missing|\[F\]'
+
+	## Regenerate initrd:
+		fRebuild_Dracut
+
+
+####
+#### Once successfully booting
+
+	## Make sure you have network connectivity
+		ping 9.9.9.9
+
+	## SSH in as root.
+
+	## Make sure DNS resolution works
+		ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+		ping google.com
+
+	## Load the same variables and functions into bash shell environment that you would have for chroot.
+
+	## Make sure the correct core stuff is installed. This needs to be installed again, because some previous installs probably weren't to correct final locations.
+		update-alternatives --install /usr/sbin/initrd initrd /usr/bin/dracut 100
+			sudo update-alternatives --set initrd /usr/bin/dracut
+		sudo apt update && sudo apt upgrade
+		sudo apt install apt-transport-https apt-utils aptitude autoconf automake bindfs bmon btrfs-progs build-essential ca-certificates checkinstall cifs-utils cmatrix colordiff console-common console-data console-setup coreutils cowsay cryptsetup curl debootstrap diffutils dirmngr dkms bind9-dnsutils dosfstools dpkg-dev dracut dracut-core dracut-network e2fsprogs encfs equivs espeak exfat-fuse exfatprogs fail2ban figlet firmware-linux firmware-linux-nonfree fortune-mod gawk gcc gdisk gettext git grub2-common grub-efi-amd64 htop ifupdown inotify-tools intltool ioping iotop iproute2 iputils-ping isc-dhcp-client keyboard-configuration libaa-bin libc-bin liblz4-dev libssl-dev libtool-bin linux-headers-$(uname -r) linux-headers-amd64 linux-image-amd64 locales logrotate lolcat lsof lvm2 lz4 make man-db manpages-pl mc moreutils mtools nano net-tools netcat-openbsd ntfs-3g p7zip-full parted pv python3-btrfsutil qalc rsync samba samba-common-bin schroot screen shellcheck smartmontools smbclient ssh sshfs subversion sudo symlinks systemd systemd-resolved systemd-timesyncd tmux toilet traceroute trash-cli tzdata ufw uuid vbindiff wget wireless-tools xattr xxd zfs-auto-snapshot zfs-dkms zfs-dracut zfsutils-linux zip
+			## Keep existing versions of config files, don't overwrite.
+		sudo apt purge initramfs-tools mdadm os-prober && sudo apt autoremove
+			## Ditching mdadm because for unrelated reasons it tends to hang boot before ZFS modules are loaded. And with ZFS, odds are a lower you don't need mdadm anyway.
+
+	## Mount encrypted future user folder(s)
+		fEcho_Clean_Force
+		sudo zfs load-key "rpool_${mUID}/deb/persist/home/${USER}" || true  #: Loads key for encrypted home
+		sudo zfs mount "rpool_${mUID}/deb/persist/home/${USER}" || true  #...: Mounts encrypted home.
+		sudo zfs mount -a
+		fZfsListProps_Mount; fMount_ListZfs; fZfsListUnmountedThatShould
+		fd /boot; fd /boot/efi; fd /home/${USER}
+
+	## Update system-wide folder permisssions. (Yes, again.)
+		fEchoPromptEval "sudo chmod -R  u+rwX,go+rX,go-w     '/'          2>/dev/null"
+		fEchoPromptEval "sudo chmod 755 /etc/ssh && sudo chmod 600 /etc/ssh/sshd_config /etc/ssh/ssh_host_*_key && sudo chmod 644 /etc/ssh/ssh_host_*_key.pub"
+		fEchoPromptEval "sudo chmod -R  u+rwX,go-rw          '/root'"
+		fEchoPromptEval "sudo chmod -R  u+rwX,go+rX,go-w,o-r '/home'"
+		fEchoPromptEval "sudo chmod -R  1777                 '/tmp'"
+		fEchoPromptEval "sudo chmod -R  1777                 '/var/tmp'"
+		fEchoPromptEval "sudo chmod -R  u+rwX,go-rw          '/home/${USER}'"
+		fEchoPromptEval "sudo chown -R ${USER}:${USER}   '/home/${USER}'"
+		fd /; fd /home/${USER}
+
+	## Reduce ZFS cache use
+
+	## Continue with 'debian.txt
+
+	## Once you are very certain you will no longer need to use a rescue image and chroot image for this initial configuration ever again (other than potential future rescue),
+	## delete the stuff that got installed to the wrong locations previously in the chroot.
+
+
+####
+#### UKI boot, systemd-boot, and auto-rebuild script (no USB key, dracut-sshd, or SecureBoot ...yet)
+
+	## Reference: Original commandline: BOOT_IMAGE=/deb/BOOT@/vmlinuz-6.12.73+deb13-amd64 root=ZFS=/deb/ROOT ro rd.luks.name=b121f4f6-31d7-439d-bc5c-b02581d6effb=crypt_t2nsn rd.luks.key=/etc/cryptkeys/t2nsn.key rd.lvm.lv=vg_t2nsn/lv_rpool_t2nsn root=ZFS=rpool_t2nsn/deb/ROOT ip=dhcp consoleblank=0 quiet splash mitigations=off apic=on init_on_alloc=0 zswap.enabled=1 zswap.compressor=zstd zswap.zpool=zsmalloc loglevel=3
+
+	sudo apt-get install systemd-boot systemd-boot-efi
+
+	sudo nano /etc/kernel/install.conf
+		layout=uefi
+		BOOT_ROOT=/boot/efi
+
+	sudo nano /boot/efi/loader/loader.conf
+		timeout 5
+		console-mode keep
+		#default @saved
+
+	## Build UKI command line file
+		filePath="/etc/kernel/uki-cmdline.conf"  #; sudo nano "${filePath}"
+		sudo tee <<- EOF_1mv0m04
+			##	Purpose:
+			##		- Command-line for the dracut/UKI build process.
+			##		- These commands get passed to the kernel, so normally stuff that would go in Grub's GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT lines.
+			##	Notes:
+			##		- The dracut/UKI build process can't handle blank lines or comment lines. But the custom /usr/local/sbin/rebuild-uki script strips them out.
+			##	History:
+			##		- 20260310 tt: Created.
+
+			## LUKS
+			rd.luks.name=${luksUUID}=crypt_${mUID}
+
+			## LVM
+			rd.lvm.lv=vg_${mUID}/lv_rpool_${mUID}
+			rd.lvm.lv=vg_${mUID}/lv_bpool_${mUID}
+
+			## ZFS root
+			root=ZFS=rpool_${mUID}/deb/ROOT
+
+			## Network (for dracut-sshd later)
+			ip=dhcp
+			rd.neednet=1
+			rd.net.timeout.dhcp=15
+			rd.net.timeout.carrier=5
+
+			## Console
+			consoleblank=0
+			quiet
+			splash
+
+			## Performance
+			mitigations=off
+			apic=on
+			init_on_alloc=0
+
+			## ZSwap
+			zswap.enabled=1
+			zswap.compressor=zstd
+			zswap.zpool=zsmalloc
+
+			## Consol logging
+			loglevel=3
+
+			## Debugging
+			#debug
+			#rd.break=emergency
+			#rd.break=pre-mount
+			#rd.break
+
+		EOF_1mv0m04
+		sudo nano "${filePath}"
+
+	## Create the dracut rebuild script.
+	## Note: This HEREDOC preserves '$' without escaping; but therefore also can't handle actual creation-time variables.
+		## Currently at: /home/${USER}/mnt/encfs/encfs_daily/0_findhome/rebuild-uki
+			sudo cp /home/${USER}/mnt/encfs/encfs_daily/0_findhome/rebuild-uki /usr/local/sbin/rebuild-uki  &&  sudo chmod +x /usr/local/sbin/rebuild-uki  &&  sudo chown root:root /usr/local/sbin/rebuild-uki  &&  sudo nano /usr/local/sbin/rebuild-uki; sudo d /usr/local/sbin/rebuild-uki
+		## Eventually do via cat+HEREDOC below:
+			filePath="/usr/local/sbin/rebuild-uki"  #; sudo nano "${filePath}"
+			sudo tee <<- 'EOF_1mv0mh1'
+				#!/bin/bash
+			EOF_1mv0mh1
+			sudo chmod 700 "${filePath}"
+			sudo nano      "${filePath}"
+
+	## Create the dracut rebuild trigger script.
+	## Note: This HEREDOC preserves '$' without escaping; but therefore also can't handle actual creation-time variables.
+		filePath="/etc/kernel/postinst.d/99-rebuild-uki"  #; sudo nano "${filePath}"
+		sudo tee <<- 'EOF_1mv0px7'
+			#!/bin/bash
+
+			##	Purpose:
+			##		- Custom script to trigger the custom rebuild script.
+			##	Dependencies:
+			##		- /usr/local/sbin/rebuild-uki
+			##			- /etc/kernel/uki-cmdline.conf
+			##	History:
+			##		- 20260310 tt: Created template.
+
+			set -euo pipefail
+			kernelVersion_1mv0v85="$1"
+			exec /usr/local/sbin/rebuild-uki "${kernelVersion_1mv0v85}"
+
+		EOF_1mv0px7
+		sudo chmod 755 "${filePath}"
+		sudo nano      "${filePath}"
+
+	## Create grub fallback entry
+		filePath="/boot/efi/loader/entries/grub-fallback.conf"  #; sudo nano "${filePath}"
+		sudo tee <<- 'EOF_1mv0w6n'
+			title  Debian (emergency GRUB fallback)
+			efi    /EFI/debian/shimx64.efi
+		EOF_1mv0w6n
+		sudo nano "${filePath}"
+
+
+##
+## Add USB key unlock capability
+
+	## Create a (real) USB key - do this from a real host, not VM. (Alternately, from a VM with a passed-through USB device.)
+		## Find device name
+			fDriveInfo
+			keyDev='sda'
+			ls -lA --color=always /dev/disk/*/* | grep --color=always "${keyDev}"
+			fEcho_Clean_Force
+		## USB device: wipe, partition, format to ext4, and mount it.
+			fEchoPromptEval "sudo wipefs -a  '/dev/${keyDev}'" ; sudo partprobe
+			fEchoPromptEval "sudo sgdisk  --zap-all  '/dev/${keyDev}'" ; sudo partprobe
+			fEchoPromptEval "sudo sgdisk  -n 1:0:0  -t 1:8300  -c 1:'cryptkey'  '/dev/${keyDev}'" ; sudo partprobe; fDriveInfo
+			fEchoPromptEval "sudo mkfs.ext4  '/dev/${keyDev}1'" ; sudo partprobe; fDriveInfo
+				keyUUID='91bbd247-0998-44d1-8eb7-605ab2cbfccd'  ## This is the ext4 partition's /dev/disk/by-uuid/, NOT /dev/disk/by-partuuid/. Used to unlock luks at grub stage.
+			fEchoPromptEval "fMakeDir '/mnt/usb/cryptkey_${mUID}'"
+			fEchoPromptEval "sudo mount  '/dev/disk/by-uuid/${keyUUID}'  '/mnt/usb/cryptkey_${mUID}'" ; sudo partprobe; fDriveInfo
+		## Generate a new unlock keyfile (real somewhat hidden, plus a visible dummy)
+			fEchoPromptEval "sudo openssl rand -hex  32 > '/mnt/usb/cryptkey_${mUID}/UNLOCK_KEY.BIN'"  ## Visible dummy
+				sudo chmod  ugo+r,u+w,go-w  "/mnt/usb/cryptkey_${mUID}/UNLOCK_KEY.BIN"
+				fd "/mnt/usb/cryptkey_${mUID}/UNLOCK_KEY.BIN"
+			fEchoPromptEval "fMakeDir '/mnt/usb/cryptkey_${mUID}/.keys'"
+			fEchoPromptEval "sudo openssl rand -hex 256 > '/mnt/usb/cryptkey_${mUID}/.keys/${mUID}.hex'"   ## Hidden real. This will be a literal ASCII character key rather than binary, but it's equivalent to a 256-bit binary key.
+				sudo chmod -R  u+rX,ugo-w,go-rwX  "/mnt/usb/cryptkey_${mUID}/.keys"
+				fd "/mnt/usb/cryptkey_${mUID}/.keys/"
+				sudo cat "/mnt/usb/cryptkey_${mUID}/.keys/${mUID}.hex"; fEcho_Clean_Force
+		## Back up key
+			targetBackupFilespec="${HOME}/Desktop/luks_${mUID}_grub-key_$(date "+%Y%m%d-%H%M%S") [regular pwd].7z"
+			fEchoPromptEval "sudo 7z a -t7z -mx=5 -p -mhe=on  '${targetBackupFilespec}'  '/mnt/usb/cryptkey_${mUID}/.keys'"  &&  fd "${targetBackupFilespec}"
+			fEchoPromptEval "sudo mv  /root/Desktop/luks_${mUID}_grub-key_*.7z  /home/${USER}/Desktop/  &&  sudo chown ${USER}:${USER} /home/${USER}/Desktop/luks_${mUID}_grub-key_*.7z"
+
+	## Add the new key to a LUKS key slot. (It stores the contents, not the file path.)
+		fEchoPromptEval "sudo cryptsetup luksAddKey --pbkdf pbkdf2  '/dev/disk/by-uuid/${luksUUID}'  '/mnt/usb/cryptkey_${mUID}/.keys/${mUID}.hex'"
+
+	## Create dracut modules
+
+		[[ ! -d /usr/lib/dracut/modules.d/99usb-unlock ]] && mkdir -p /usr/lib/dracut/modules.d/99usb-unlock
+
+		## Setup script
+		## Note: This HEREDOC preserves '$' without escaping; but therefore also can't handle actual creation-time variables.
+			filePath="/usr/lib/dracut/modules.d/99usb-unlock/module-setup.sh"  #; sudo nano "${filePath}"
+			sudo tee <<- 'EOF_1mv0xwz'
+
+				#!/bin/bash
+
+				check() { return 0; }
+
+				#depends() { echo "systemd systemd-initrd crypt"; }
+				depends() { echo "systemd systemd-initrd"; }
+
+				install() {
+				    inst_script "$moddir/usb-unlock.sh"      /usr/sbin/usb-unlock.sh
+				    inst_simple "$moddir/usb-unlock.service" /usr/lib/systemd/system/usb-unlock.service
+				    systemctl -q --root "$initdir" enable usb-unlock.service
+				    inst_multiple mount umount cryptsetup
+				}
+			EOF_1mv0xwz
+			chmod 755 "${filePath}"
+			sudo nano "${filePath}"
+
+		## Unlock service
+			filePath="/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.service"  #; sudo nano "${filePath}"
+			sudo tee <<- EOF_1mv0y5e
+				[Unit]
+				Description=USB key LUKS unlock
+				DefaultDependencies=no
+				Before=systemd-cryptsetup@crypt_t2nsn.service
+				After=systemd-udev-settle.service
+
+				[Service]
+				Type=oneshot
+				ExecStart=/usr/sbin/usb-unlock.sh
+				RemainAfterExit=yes
+
+				[Install]
+				WantedBy=sysinit.target
+			EOF_1mv0y5e
+			sudo nano "${filePath}"
+
+		## Unlock script
+			filePath="/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.sh"  #; sudo nano "${filePath}"
+			sudo tee <<- EOF_1mv0ye6
+				#!/bin/bash
+
+				fMain(){
+
+				◦◦◦◦## Constants
+				◦◦◦◦local -r USB_UUID="${keyUUID}"
+				◦◦◦◦local -r LUKS_UUID="${luksUUID}"
+				◦◦◦◦local -r LUKS_NAME="crypt_t2nsn"
+				◦◦◦◦local -r KEYFILE_PATH=".keys/t2nsn.hex"
+				◦◦◦◦local -r USB_MOUNTPOINT="/run/usb-unlock-key"
+				◦◦◦◦local -r USB_TIMEOUT=15
+
+				◦◦◦◦## Variables
+				◦◦◦◦local -i elapsed=0
+
+				◦◦◦◦echo "usb-unlock: Waiting ${USB_TIMEOUT} seconds for USB key device..." >/dev/console
+
+				◦◦◦◦## Wait for USB device to appear
+				◦◦◦◦elapsed=0
+				◦◦◦◦while [[ ! -e "/dev/disk/by-uuid/💰{USB_UUID}" ]]; do
+				◦◦◦◦◦◦◦◦((elapsed >= USB_TIMEOUT))  &&  { echo "usb-unlock: USB key not found after 💰{USB_TIMEOUT} seconds, skipping." >/dev/console; sleep 3; exit 0; }
+				◦◦◦◦◦◦◦◦sleep 1
+				◦◦◦◦◦◦◦◦elapsed=💰((elapsed+1))
+				◦◦◦◦done
+
+				◦◦◦◦## Try to mount the USB key
+				◦◦◦◦echo "usb-unlock: USB key found, attempting unlock..." >/dev/console
+				◦◦◦◦[[ ! -d "💰{USB_MOUNTPOINT}" ]] && mkdir -p "💰{USB_MOUNTPOINT}"
+				◦◦◦◦mount -o ro "/dev/disk/by-uuid/💰{USB_UUID}" "💰{USB_MOUNTPOINT}"  ||  { echo "usb-unlock: failed to mount USB key, skipping." >/dev/console; sleep 3; exit 0; }
+
+				◦◦◦◦## See if the unlock key exists
+				◦◦◦◦[[ -f "💰{USB_MOUNTPOINT}/💰{KEYFILE_PATH}" ]]  ||  { echo "usb-unlock: key file not found." >/dev/console; sleep 3; exit 0; }
+
+				◦◦◦◦## Try to unlock LUKS
+				◦◦◦◦if cryptsetup luksOpen "UUID=💰{LUKS_UUID}"  "💰{LUKS_NAME}"  --key-file="💰{USB_MOUNTPOINT}/💰{KEYFILE_PATH}"; then
+				◦◦◦◦◦◦◦◦echo "usb-unlock: LUKS unlocked successfully." >/dev/console
+				◦◦◦◦else
+				◦◦◦◦◦◦◦◦echo "usb-unlock: cryptsetup failed, password prompt will follow." >/dev/console; sleep 3
+				◦◦◦◦fi
+
+				◦◦◦◦umount "💰{USB_MOUNTPOINT}"
+
+				◦◦◦◦# Show network info
+				◦◦◦◦fShowNetInfo
+
+				◦◦◦◦exit 0
+
+				}
+
+				fShowNetInfo(){
+				◦◦◦◦# Show network info
+				◦◦◦◦echo "" >/dev/console
+				◦◦◦◦echo "================================================================" >/dev/console
+				◦◦◦◦echo "Network info:" >/dev/console
+				◦◦◦◦ip addr show scope global 2>/dev/null | grep -P ' inet|^[0-9]' >/dev/console || echo " No IP address obtained yet." >/dev/console
+				◦◦◦◦echo "================================================================" >/dev/console
+				◦◦◦◦echo "" >/dev/console
+				}
+
+				fMain
+			EOF_1mv0ye6
+			sed -i 's/💰/\$/g; s/◦◦◦◦/\t/g' "${filePath}"
+			sudo chmod 755 "${filePath}"
+			sudo nano "${filePath}"
+
+		## Create UKI rebuild script (currently in sync path; in future, download from github)
+
+
+####
+#### Ability to sshd in early in order to enter password, if USB key not available, and physical access not possible.
+
+	## Make sure user 'root' can log in to both console and ssh. (This was handled earlier.)
+
+	## Make sure you have at least one regular user key in '/root/.ssh/authorized_keys', via `ssh-copy-id root@targethost` from a regular remote user account.
+
+	## Install rngtools, to make sure sshd doesn't hang without enough entropy early in boot
+		apt-get install rng-tools
+
+	## Install dracut-sshd
+		cd /usr/local/src
+		git clone https://github.com/gsauthof/dracut-sshd.git
+		cp -r dracut-sshd/46sshd /usr/lib/dracut/modules.d/
+		ls /usr/lib/dracut/modules.d/46sshd/
+
+	## Override dracut's default shadow generation, which blocks root login.
+		filePath="/usr/lib/dracut/modules.d/99fix-shadow/module-setup.sh"  #; sudo nano "${filePath}"
+			fMakeDir "$(dirname "${filePath}")"
+			sudo tee "${filePath}" <<- 'EOF_1mw0a94'
+				#!/bin/bash
+
+				check() { return 0; }
+
+				depends() { return 0; }
+
+				install() {
+				    local shadow_entry
+				    shadow_entry=$(grep '^root:' /etc/shadow)
+				    if [[ -n "$shadow_entry" ]]; then
+				        sed -i "s|^root:.*|${shadow_entry}|" "${initdir}/etc/shadow" 2>/dev/null || true
+				    fi
+				}
+			EOF_1mw0a94
+			sudo chmod 755 "${filePath}"
+			sudo nano "${filePath}"
+
+	## Override authentication to allow password authentication. This is recommended against, as the preboot initrd is a vulnerable environment.
+	#	filePath="/etc/dracut-sshd/sshd_config"  #; sudo nano "${filePath}"
+	#		fMakeDir "$(dirname "${filePath}")"
+	#		sudo tee "${filePath}" <<- EOF_1mwnbxr
+	#			SyslogFacility          AUTHPRIV
+	#			PermitRootLogin         yes
+	#			AuthorizedKeysFile      .ssh/authorized_keys
+	#			AuthenticationMethods   publickey password
+	#			UsePAM                  no
+	#			X11Forwarding           no
+	#			Subsystem sftp          internal-sftp
+	#		EOF_1mwnbxr
+
+####
+#### Signing and SecureBoot
+
+	sudo -i
+		## Load variables and functions from above.
+
+	## Install prereqs
+		sudo apt-get install mokutil shim-signed sbsigntool openssl
+
+	## Work around a 'gotcha': Secure boot has to load '/EFI/debian/shimx64.efi' first.
+		## 'shimx64.efi' in turn will only chainload 'grubx64.efi', which is Grub.
+		## So we'll have to rename the Grub EFI to something else, and systemd-boot to 'grubx64.efi', and
+		## adjust systemd-boot entries accordingly.
+			cp /boot/efi/EFI/debian/grubx64.efi /boot/efi/EFI/debian/grubx64_actual-grub.efi
+			## Update the fallback entry to point to the backup
+				sudo nano /boot/efi/loader/entries/grub-fallback.conf
+					title  Debian (emergency GRUB fallback)
+					efi    /EFI/debian/grubx64_actual-grub.efi
+
+	## Generate a MOK key pair (do NOT need to do this for each clone - just your main master image):
+		fMakeDir /etc/mok
+		sudo openssl req -newkey rsa:4096 -nodes -keyout /etc/mok/mok.key -new -x509 -sha256 -days 36500 -subj "/CN=t2nsn MOK Signing Key/" -out /etc/mok/mok.crt
+		sudo openssl x509 -in /etc/mok/mok.crt -out /etc/mok/mok.der -outform DER
+		sudo chmod 600 /etc/mok/mok.key
+		fd /etc/mok/
+
+	## Enroll the key into machine's UEFI (do this whenever moving the boot image to a new machine or VM host)
+		sudo mokutil --import /etc/mok/mok.der
+			## It will prompt you for a one-time enrollment password. Pick something simple you can type at the MokManager screen (it's a basic UI).
+			## After setting the password, reboot. You'll be dropped into the blue MokManager screen. Choose "Enroll MOK" → "Continue" → enter the password → "Yes" → reboot.
+				## Bubba!
+			## You won't need to store or remember the password after the reboot and challenge, it's a one-time thing.
+
+	## Sign EFIs
+
+		## Sign systemd-boot with self-signed key (outputting to 'grubx64.efi' so that 'shimx64.efi' will chainload it)
+			sudo sbsign --key /etc/mok/mok.key --cert /etc/mok/mok.crt --output /boot/efi/EFI/debian/grubx64.efi /usr/lib/systemd/boot/efi/systemd-bootx64.efi
+
+		 # Sign BOOTX64.EFI (fallback boot path)
+			sudo sbsign --key /etc/mok/mok.key --cert /etc/mok/mok.crt --output /boot/efi/EFI/BOOT/BOOTX64.EFI /usr/lib/systemd/boot/efi/systemd-bootx64.efi
+
+		## Sign systemd-boot in its original location
+			sudo sbsign --key /etc/mok/mok.key --cert /etc/mok/mok.crt --output /boot/efi/EFI/systemd/systemd-bootx64.efi /usr/lib/systemd/boot/efi/systemd-bootx64.efi
+
+	## UEFI boot entries
+
+		## Rename existing direct systemd-boot entry:
+			## List boot entries and note the number of the one labeled something like "Linux Boot Manager".
+				efibootmgr -v | grep -E 'BootOrder|Boot[0-9]' | grep -iv 'Boot0000'
+			## Rename it
+				sudo efibootmgr --delete-bootnum --bootnum 0008
+				sudo efibootmgr --create --disk /dev/${diskTarget_dev} --part 1 --label "Debian (direct systemd-boot fallback)" --loader '\EFI\systemd\systemd-bootx64.efi'
+
+		## Create boot entry for Debian via signed shim
+			sudo efibootmgr --delete-bootnum --bootnum 0001
+			sudo efibootmgr --create --disk /dev/${diskTarget_dev} --part 1 --label 'Debian' --loader '\EFI\debian\shimx64.efi'
+			efibootmgr -v | grep -E 'BootOrder|Boot[0-9]'
+
+	## Reboot into UEFI setup, and enable secureboot.
+
+
+####
+#### Install libvirt, Docker, NordVPN
+
+	mainNetDev='enp1s0'
+
+	## Install libvirt
+		sudo apt install --no-install-recommends qemu-system-x86 libvirt-daemon-system libvirt-clients virt-manager bridge-utils virt-manager ca-certificates curl gnupg
+
+	## Create bridge definition (in preparation to switch to systemd-network)
+		filePath="/etc/systemd/network/10-br0.netdev"  #; sudo nano "${filePath}"
+			sudo tee "${filePath}" <<- EOF_1mw1cbt
+				[NetDev]
+				Name=br0
+				Kind=bridge
+			EOF_1mw1cbt
+			sudo nano "${filePath}"
+		filePath="/etc/systemd/network/20-enp1s0.network"  #; sudo nano "${filePath}"
+			sudo tee "${filePath}" <<- EOF_1mw1cj1
+				[Match]
+				Name=${mainNetDev}
+
+				[Network]
+				Bridge=br0
+			EOF_1mw1cj1
+			sudo nano "${filePath}"
+		filePath="/etc/systemd/network/30-br0.network"  #; sudo nano "${filePath}"
+			## Choose only one of:
+				## DHCP
+					sudo tee "${filePath}" <<- EOF_1mw2hgt
+						[Match]
+						Name=br0
+
+						[Network]
+						DHCP=yes
+						EOF
+					EOF_1mw2hgt
+					sudo nano "${filePath}"
+				## Static IP
+					sudo tee "${filePath}" <<- EOF_1mwjqfm
+						[Match]
+						Name=br0
+
+						[Network]
+						Address=192.168.1.123/24
+						Gateway=192.168.1.1
+						DNS=9.9.9.9 1.1.1.1
+					EOF_1mwjqfm
+					sudo nano "${filePath}"
+
+	## Switch over to systemd-networkd
+		sudo systemctl disable --now NetworkManager
+		sudo systemctl disable --now networking
+		sudo systemctl enable --now systemd-networkd systemd-resolved
+		ip addr show br0
+
+	## Prevent networking problems that Docker causes with libvirt, before installind Docker
+		filePath="/etc/sysctl.d/90-bridge-nofilter.conf"  #; sudo nano "${filePath}"
+			sudo tee "${filePath}" <<- EOF_1mwncxj
+				net.ipv4.ip_forward=1
+				net.bridge.bridge-nf-call-iptables=0
+				net.bridge.bridge-nf-call-ip6tables=0
+			EOF_1mwncxj
+			sudo nano "${filePath}"
+			sudo sysctl -p "${filePath}"
+		filePath="/etc/docker/daemon.json"  #; sudo nano "${filePath}"
+			sudo tee "${filePath}" <<- EOF_1mwnrhe
+				{
+				  "bip": "172.17.0.1/24",
+				  "fixed-cidr": "172.17.0.0/24"
+				}
+			EOF_1mwnrhe
+			sudo nano "${filePath}"
+		filePath="/etc/modules-load.d/br_netfilter.conf"  #; sudo nano "${filePath}"
+			echo br_netfilter | sudo tee "${filePath}"
+			sudo nano "${filePath}"
+
+		## Enable br_netfilter and check status
+			sudo modprobe br_netfilter
+			sudo sysctl -p /etc/sysctl.d/90-bridge-nofilter.conf
+
+	## Install docker (Install Docker Engine, NOT Docker Desktop. The latter uses a VM.)
+		## Follow instructions on: https://docs.docker.com/engine/install/debian/#installation-methods
+
+	## Install NordVPN
+		curl -sSf https://downloads.nordcdn.com/apps/linux/install.sh | sh
+		nordvpn login
+
+	## Add user permissions, and start services
+		sudo usermod -aG libvirt  $USER
+		sudo usermod -aG kvm      $USER
+		sudo usermod -aG docker   $USER
+		sudo usermod -aG nordvpn  $USER
+		sudo systemctl enable --now libvirtd
+
+	## Either reboot or enter a new shell with updated permissions
+		newgrp
+
+	## Test simultaneous connectivity
+
+		## Install bash into Docker:
+			docker pull bash ; docker ps -a
+			docker run -it bash
+				## Then from inside the Docker bash
+					ping -4 google.com
+
+		## Create a new TinyCore64 VM, booting to LiveCD:
+			http://www.tinycorelinux.net/17.x/x86_64/release/CorePure64-current.iso
+			## Then from a terminal:
+				ping google.com
+
+		## From a regular host terminal
+			ping google.com
+
+		## While that's happening, connect to NordVPN, make sure the pings are still going, including after disconnect.
+			nordvpn connect
+
+-->
+
+## Document history
+
+- 2026-03-31: Template put in Git.
+
+## Copyright and license
+
+> Copyright © 2020-2026 t00mietum (ID: f⍒Ê🝅ĜᛎỹqFẅ▿⍢Ŷ‡ʬẼᛏ🜣)<br>
+> Licensed under GNU GPL v2 <https://www.gnu.org/licenses/gpl-2.0.html>. No warranty.
