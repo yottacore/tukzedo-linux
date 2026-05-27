@@ -34,23 +34,19 @@
 <!-- TOC ignore:true -->
 # Tukzedo Linux
 
-The purpose of Tukzedo Linux is to bring stronger security, more security _convenience_, and filesystem modernization to the Linux desktop.
-
-And not coincidentally, to bring some optional - if controversial - features ready to go [that don't take up much space], that many Windows users use - while Microsoft is being percieved as making catastrophic, once-in-a-generation stumbles with Windows.
-
-It's great for headless servers too; servers that need more _individual_ machine-level physical security, than datacenter-level security. (In that case the Windows-like optional features - as well as all GUI applications and DE stack - can be easily removed with a single provided command. Or just not installed in the first place.)
-
-It would be hard to oversell the notion that the major features complete in Phase I haven't existed before in a single linux distro. (To this author's awareness and research.)
-
-To be clear though, this is not yet a "distro". That's a stretch goal for now, a vision. For now it's a DIY recipe with all-native ingredients, and complete idiomatic build instructions - to put together a Debian-based OS nearly from the ground-up, that handles major ongoing upgrades as the parent distro intends.
-
-You'll probably know if you need the existing "Phase I" features listed below, immediately. If so, it's probably because you've worked with some or even all of these features before. None are new or novel features. Many have appeared in other distros together. They've just never all been in one system at the same time.
+<table style="border: none; border-collapse: collapse;">
+	<tr style="border: none; border-collapse: collapse;">
+		<td style="border: none; border-collapse: collapse;"><img src="https://github.com/t00mietum/tukzedo-linux/blob/main/assets/mascot.png?raw=true" alt="x9convert-base-v2" width="512"/></td>
+		<td style="border: none;"><p>The purpose of Tukzedo Linux is to bring stronger security, more security _convenience_, and filesystem modernization to the Linux desktop.</p><p>And not coincidentally, to bring some optional - if controversial - features ready to go [that don't take up much space], that many Windows users use - while Microsoft is being percieved as once-in-a-generation stumbles with consumer-facing Windows.</p><p>It's great for headless servers too; servers that need more _individual_ machine-level physical security, than datacenter-level security. (In that case the Windows-like optional features - as well as all GUI applications and DE stack - can be easily removed with a single provided command. Or just not installed in the first place.)</p></td>
+	</tr style="border: none; border-collapse: collapse;">
+</table>
 
 <!-- TOC ignore:true -->
 ## Table of contents
 
 <!-- TOC -->
 
+- [Introduction](#introduction)
 - [Project challenges - SOLVED](#project-challenges---solved)
 	- [ZFS as the root filesystem](#zfs-as-the-root-filesystem)
 	- [Luks+LVM+ZFS-aware bootloader](#lukslvmzfs-aware-bootloader)
@@ -84,6 +80,14 @@ You'll probably know if you need the existing "Phase I" features listed below, i
 - [Copyright and license](#copyright-and-license)
 
 <!-- /TOC -->
+
+## Introduction
+
+It would be hard to oversell the notion that the major features complete in Phase I haven't existed before in a single linux distro. (To this author's awareness and research.)
+
+To be clear though, this is not yet a "distro". That's a stretch goal for now, a vision. For now it's a DIY recipe with all-native ingredients, and complete idiomatic build instructions - to put together a Debian-based OS nearly from the ground-up, that handles major ongoing upgrades as the parent distro intends.
+
+You'll probably know if you need the existing "Phase I" features listed below, immediately. If so, it's probably because you've worked with some or even all of these features before. None are new or novel features. Many have appeared in other distros together. They've just never all been in one system at the same time.
 
 ## Project challenges - SOLVED
 
