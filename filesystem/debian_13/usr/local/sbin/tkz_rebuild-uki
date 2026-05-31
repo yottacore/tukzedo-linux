@@ -1,0 +1,637 @@
+#!/bin/bash
+# shellcheck disable=2001  ## Complaining about use of sed istead of bash search & replace.
+# shellcheck disable=2002  ## Useless use of cat. Except cat works well, is very readable, and screw syntax purity.
+# shellcheck disable=2004  ## Inappropriate complaining of "$/${} is unnecessary on arithmetic variables."
+# shellcheck disable=2012  ## 'Use find instead of ls to better handle non-alphanumeric filenames.''
+# shellcheck disable=2034  ## Unused variables.
+# shellcheck disable=2053  ## Disable Yoda Notation warning.
+# shellcheck disable=2119  ## Disable confusing and inapplicable warning about function's $1 meaning script's $1.
+# shellcheck disable=2120  ## OK with declaring variables that accept arguments, without calling with arguments (this is 'overloading').
+# shellcheck disable=2129  ## Combine args for multiple echo. No.
+# shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+
+##	Purpose:
+##		- Custom script that called by a custom trigger any time the kernel or initrd is updated, or UKI otherwise needs to be rebuilt.
+##		- This adds on to the normal behavior of building kernel and initrd to `/boot` (which still happens), and creates an all-in-one
+##		  ".efi+kernel+initrd" - aka Unified Kernel Image (UKI) - in /boot/efi/EFI/Linux.
+##		- This can also be called manually at any time.
+##	Dependencies:
+##		- /etc/kernel/uki-cmdline.conf
+##	Notes:
+##		- The dracut/UKI build process can't handle blank lines or comment lines. But this script strips them out to a valid single-line command string.
+##	History:
+##		- 20260310 JC: Created.
+##		- 20260314-18 JC:
+##			- Disable and delete ZFS cache file.
+##			- Added pre-checking of file content.
+##			- Mask boot-efi.mount.
+##		- 20260322 JC:
+##			- Added fSign_EFIs().
+##			- Changed occurrences of 'exit 1' to 'return 1'.
+
+set -euo pipefail
+
+fSyntax() { echo -e "\nUsage: $0 [--all|<specific kernel version #>]\n" >&2; return 1; }
+
+fMain(){
+	## Depending on arg, build one or more UKIs for current, all, or a specified kernel.
+
+	## Settings
+	local -ri dryRun=0 #.................: Show what output might be (except for any NEW kernel -> UKI).
+	local -ri require_LUKS=1
+	local -ri require_LVM=1
+	local -ri require_Root_ZFS=1
+	local -ri require_Root_Btrfs=0
+	local -ri require_USB=1
+	local -ri require_SSHD=1
+	local -ri require_Systemd_Boot=1
+	local -ri require_Grub=1 #...........: If require_Systemd_Boot=1, then this means "Grub as a fallback selection".
+	local -ri require_UKI=1
+	local -ri doSecureBootSigning=1
+
+	## Validate
+	{ ((require_Root_ZFS)) && ((require_Root_Btrfs)); }  &&  { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): It makes no sense to have root on both ZFS and Btrfs.\n" >&2 ; return 1; }
+
+	## Constants
+	local -r ESP_DIR="/boot/efi"
+	local -r UKI_DIR="${ESP_DIR}/EFI/Linux"
+	local -r UKI_NAME_WILDCARD='debian-*.efi'
+	local -r CMDLINE_SOURCEFILE="/etc/kernel/uki-cmdline.conf"
+	local -r LOADER_CONF="${ESP_DIR}/loader/loader.conf"
+
+	## List of filed, folders, and content to check for before building, and modules to for after.
+	local -a requiredModules=() #............................: List of modules that must be in UKI .efi files.
+	local -a forbiddenModules=() #...........................: List of modules that cannot be in UKI .efi files.
+	local -a requiredOrForbiddenFilesDirsAndOrContent=() #...: Each array item contains: isForbidded [REQUIRE or FORBID], fileOrDirPath [req str], matchRegex [opt str]
+	fPopulateCheckArrays
+	readonly requiredModules
+	readonly forbiddenModules
+	readonly requiredOrForbiddenFilesDirsOrContent
+
+	## Variables
+	local doAll=0
+	local kernelVersion_t3afd=""
+
+	# Parse args and check for need to show syntax help
+	for nextArg in "$@"; do
+		case " ${nextArg,,} " in
+			" --all ") doAll=1 ;;
+			" --"*)    fSyntax ;;
+			*)
+				[[ -n "${kernelVersion_t3afd}" ]]  &&  fSyntax
+				kernelVersion_t3afd="${nextArg}"
+			;;
+		esac
+	done
+	{ ((doAll)) && [[ -n "${kernelVersion_t3afd}" ]]; } && fSyntax
+
+	## If not --all, and no version specified, assume current
+	{ ((! doAll)) && [[ -z "${kernelVersion_t3afd}" ]]; } && kernelVersion_t3afd="$(uname -r)"
+
+	if ((require_Root_ZFS)); then
+		echo "[ Clearing ZFS cachefile settings and file, to force scan-based import ... ]"
+		if ((! dryRun)); then
+			sudo zpool set cachefile=none rpool_t2nsn 2>/dev/null || true
+			sudo zpool set cachefile=none bpool_t2nsn 2>/dev/null || true
+			[[ -f /etc/zfs/zpool.cache ]] && sudo rm -f /etc/zfs/zpool.cache
+		fi
+		echo "[ Disabling 'boot-efi.mount' service that interferes with post-ZFS /boot/efi mounting ... ]"
+		if ((! dryRun)); then
+			## 'boot-efi.mount' causes /etc/efi to mount too early, and gets shadowed by ZFS /boot.
+			## But don't 'stop' or 'disable' it, the former definitely unmounts /boot/efi thus breaking this script. Just mask it.
+			## 'fPopulateCheckArrays() populates a check to make sure '/etc/fstab' has a line to explicitly mount '/boot/efi', with 'x-systemd.after=zfs-import.target' also set as an argument.
+			sudo systemctl mask boot-efi.mount 2>/dev/null || true
+		fi
+	fi
+	sleep 1
+
+	## Check for existence of files and/or contents
+	echo -e "\n[ Checking prerequisites ... ]"
+	fCheckPrereqs
+
+	if ((doAll)); then
+		## Build UKI for ALL kernels found under /boot
+		local -a allKernels=()
+		readarray -t allKernels < <(sudo find /boot -maxdepth 1 -iname 'vmlinuz-*' 2>/dev/null | sed 's|.*/vmlinuz-||' | sort || true)
+		[[ "${#allKernels[@]}" -eq 0 ]]  &&  { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): No kernels found in /boot\n" >&2 ; return 1; }
+		for nextKernel in "${allKernels[@]}"; do fBuild_UKI "${nextKernel}"; done
+	else
+		## Build one specific version
+		fBuild_UKI "${kernelVersion_t3afd}"
+	fi
+
+	## Sign UKI and other EFIs that may have been updated
+	fSign_EFIs
+
+	## Set default boot kernel to latest -1, so that kernel won't be too new for ZFS (which isn't a rare occurrence esp on Debian Test).
+	fSetBootKernelDefaultToLatestMinusOne
+
+	echo -e "[ Done. ]"
+
+}
+
+
+fPopulateCheckArrays(){
+	## Populate parent-scoped ${requiredModules[]} ${requiredFiles[]}, ${fileContent_Files[]}, ${fileContent_Regex[]}
+
+	## General dracut
+		__fPopulateContentCheckArray          REQ   '/etc/dracut.conf.d/'                      '*.conf'            '^hostonly=no$'
+		__fPopulateContentCheckArray          REQ   '/etc/dracut.conf.d/'                      '*.conf'            '^hostonly_cmdline=no$'
+		__fPopulateContentCheckArray          REQ   '/etc/dracut.conf.d/'                      '*.conf'            '^machine_id=no$'
+		__fPopulateContentCheckArray          REQ   '/etc/dracut.conf.d/'                      '*.conf'            '^use_fstab=no$'
+		__fPopulateContentCheckArray          REQ   '/usr/lib/dracut/modules.d/99fix-shadow/'  'module-setup.sh'
+		requiredModules+=("etc/shadow")
+
+	## UKI efi [re]build
+		if ((require_UKI)); then
+			__fPopulateContentCheckArray      REQ   '/etc/kernel/postinst.d/'      '99-rebuild-uki'    'rebuild-uki'
+			__fPopulateContentCheckArray      REQ   '/usr/local/'                  'rebuild-uki'
+			if ((require_LUKS)); then :
+				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                 'uki-cmdline.conf'  'rd.luks.name=[\-0-9a-f]+=[^[:space:]]+'
+			fi
+			if ((require_LVM)); then :
+				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                 'uki-cmdline.conf'  'rd.lvm.lv=[^[:space:]]+'
+			fi
+			if ((require_USB)); then :
+			fi
+			if ((require_SSHD)); then :
+				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                 'uki-cmdline.conf'  'ip=[^[:space:]]+'
+			fi
+			if ((require_Root_ZFS)); then :
+				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                 'uki-cmdline.conf'  'root=ZFS=[^[:space:]]+'
+			fi
+			if ((require_Root_Btrfs)); then :
+			fi
+		fi
+
+	## systemd-boot
+		if ((require_Systemd_Boot)); then
+			__fPopulateContentCheckArray      REQ   '/boot/efi/loader/'                'loader.conf'
+			__fPopulateContentCheckArray      REQ   '/etc/kernel/'                     'install.conf'      'layout=uefi'
+			__fPopulateContentCheckArray      REQ   '/etc/kernel/'                     'install.conf'      'BOOT_ROOT=/boot/efi'
+		fi
+
+	## Grub (or Grub as a fallback option from systemd-boot)
+		if ((require_Grub)); then
+			__fPopulateContentCheckArray      REQ  '/etc/default/'                     'grub'              'GRUB_PRELOAD_MODULES=.*[^a-z0-9]part_gpt[^a-z0-9]'
+			if ((require_Systemd_Boot)); then
+				__fPopulateContentCheckArray  REQ  '/boot/efi/loader/entries/'         '*.conf'            'efi[ ]+/EFI/.*/shimx64.efi'
+			fi
+		fi
+
+	## LUKS2
+		if ((require_LUKS)); then :
+			__fPopulateContentCheckArray      REQ  '/etc/dracut.conf.d/'               '*.conf'            'add_dracutmodules\+=.* crypt '
+			__fPopulateContentCheckArray      REQ  '/etc/dracut.conf.d/'               '*.conf'            'force_dracutmodules\+=.* crypt '
+			__fPopulateContentCheckArray      REQ  '/etc/dracut.conf.d/'               '*.conf'            'install_items\+=.* /sbin/cryptsetup '
+			if ((require_Grub)); then :
+				#	requiredFiles+=("/etc/cryptkeys/*.key")
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_ENABLE_CRYPTODISK=y'
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_PRELOAD_MODULES=.*[^a-z0-9]luks2[^a-z0-9]'
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_CMDLINE_LINUX=.*[^a-z0-9]rd.luks.name=[^[:space:]]+='
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_CMDLINE_LINUX=.*[^a-z0-9]rd.luks.key='
+			fi
+			requiredModules+=("cryptsetup")
+			requiredModules+=("dm-crypt")
+		fi
+
+	## LVM
+		if ((require_LVM)); then :
+			__fPopulateContentCheckArray      REQ  '/etc/dracut.conf.d/'               '*.conf'            'add_dracutmodules\+=.* lvm '
+			__fPopulateContentCheckArray      REQ  '/etc/dracut.conf.d/'               '*.conf'            'force_dracutmodules\+=.* lvm '
+			__fPopulateContentCheckArray      REQ  '/etc/dracut.conf.d/'               '*.conf'            'install_items\+=.* /sbin/lvm '
+			__fPopulateContentCheckArray      REQ  '/etc/dracut.conf.d/'               '*.conf'            'install_items\+=.* /sbin/vgchange '
+			if ((require_Grub)); then :
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_PRELOAD_MODULES=.*[^a-z0-9]lvm[^a-z0-9]'
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_CMDLINE_LINUX=.*[^a-z0-9]rd.lvm.lv='
+			fi
+			requiredModules+=("lvm")
+			requiredModules+=("vgchange")
+		fi
+
+	## USB unlock key
+		if ((require_USB)); then :
+			#	requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/module-setup.sh")
+			#	requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.service")
+			#	requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.service")
+			#	requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.sh")
+			requiredModules+=("ext4")
+			requiredModules+=("sbin/usb-unlock.sh")
+			requiredModules+=("usb-unlock.service")
+		fi
+
+	## SSHD
+		if ((require_SSHD)); then :
+			#	requiredFiles+=("/root/.ssh/authorized_keys")
+			#	requiredFiles+=("/root/.ssh/known_hosts")
+			requiredModules+=("authorized_keys")
+			requiredModules+=("rng")
+			requiredModules+=("ssh_host")
+			requiredModules+=("sshd")
+		fi
+
+	## ZFS
+		if ((require_Root_ZFS)); then
+			#	requiredFiles+=("/usr/lib/dracut/modules.d/99zfs-force-import/force-import.sh")
+			#	requiredFiles+=("/usr/lib/dracut/modules.d/99zfs-force-import/module-setup.sh")
+			__fPopulateContentCheckArray      REQ   '/etc/'                            'fstab'             '[ ]+/boot/efi[ ]+vfat[ ]+.*x-systemd.after=zfs-import.target[ ]+'
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'add_dracutmodules\+=.* zfs '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'force_dracutmodules\+=.* zfs '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'install_items\+=.* /sbin/zpool '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'install_items\+=.* /sbin/zfs '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'omit_dracutmodules\+=.* mdraid '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'omit_dracutmodules\+=.* mdraid-cleanup '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'omit_drivers\+=.* raid0 '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'omit_drivers\+=.* raid1 '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'omit_drivers\+=.* raid10 '
+			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'omit_drivers\+=.* raid456 '
+			__fPopulateContentCheckArray      FORB  '/etc/dracut.conf.d/'              '*.conf'            '(add|force)_dracutmodules\+=.* mdadm '
+			__fPopulateContentCheckArray      FORB  '/etc/dracut.conf.d/'              '*.conf'            '(add|force)_dracutmodules\+=.* mdraid '
+			__fPopulateContentCheckArray      FORB  '/etc/dracut.conf.d/'              '*.conf'            'install_items\+=.*mdadm '
+			if ((require_UKI)); then
+				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                     'uki-cmdline.conf'  'rd.luks.name=[\-0-9a-f]+=[^[:space:]]+'
+			fi
+			if ((require_Grub)); then :
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_DEFAULT="1>2"'
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_PRELOAD_MODULES=.*[^a-z0-9]zfs[^a-z0-9]'
+				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_CMDLINE_LINUX=.*[^a-z0-9]root=ZFS=[^[:space:]]+'
+			fi
+			requiredModules+=("force-import.sh")
+			requiredModules+=("parse-zfs.sh")
+			requiredModules+=("sbin/zfs")
+			requiredModules+=("sbin/zpool")
+			requiredModules+=("zfs-import-scan.service")
+			requiredModules+=("zfs-import.target")
+			requiredModules+=("zfs.ko")
+			forbiddenModules+=("mdadm")
+			forbiddenModules+=("zpool.cache")
+		fi
+
+	## BTRFS
+		if ((require_Root_Btrfs)); then
+			forbiddenModules+=("mdadm")
+			if ((require_Grub)); then :
+			fi
+		fi
+
+}
+
+
+__fPopulateContentCheckArray(){
+	## Args
+	local    doReqOrForb="${1:-}"      ; shift || true #..........: [REQUIRED]: 'R[EQUIRE]' or 'F[ORBID]'.
+	local    searchDir="${1:-}"        ; shift || true #..........: [REQUIRED]: Directory to check for existence. If $grepExp not "", also searches files for regex match.
+	local -r searchFilespec="${1:-}"   ; shift || true #..........: [optional]: Filspec to check for existence. Can contain `find`-style glob chars, e.g. '*'. If $grepExp not "", also searches those|that file(s) for regex match.
+	local -r grepExp="${1:-}"          ; shift || true #..........: [optional]: Regex match.
+	## Variables
+	local tmpStr=""
+	## Validate and normalize
+	case "${doReqOrForb^^}" in
+		'R'*) doReqOrForb='R' ;;
+		'F'*) doReqOrForb='F' ;;
+		*)    doReqOrForb=''; echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): First arg must be 'R[EQUIRE]' or 'F[ORBID]'." >&2 ; return 1 ;;
+	esac ; readonly doReqOrForb
+	[[ -z "${searchDir}" ]]    &&  { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Second arg must be a file path." >&2 ; return 1; }
+	searchDir="${searchDir%%/}/" ; readonly searchDir
+	## Append values to array
+	fRowField_ResetIdx
+	fRowField_AppendVal  tmpStr  "${doReqOrForb}"
+	fRowField_AppendVal  tmpStr  "${searchDir}"
+	fRowField_AppendVal  tmpStr  "${searchFilespec}"
+	fRowField_AppendVal  tmpStr  "${grepExp}"
+	requiredOrForbiddenFilesDirsOrContent+=("${tmpStr}")
+}
+
+
+fCheckPrereqs(){
+	## Make sure misc stuff is in order, before building.
+	## Uses parent-scope array $requiredOrForbiddenFilesDirsOrContent[]
+
+	## Variables
+	local    sItem=""
+	local    sItemSub=""
+	local    sItem_RequiredOrForbidden=""
+	local    sItem_SearchDir=""
+	local    sItem_SearchFilespec=""
+	local    sItem_GrepExp=""
+	local -a outStrLinesArr=()
+	local -a tmpFoundFiles=()
+	local -a tmpGrepMatchFiles=()
+	local -i isForbidden=0
+	local -i hasProblem=0  ## Only set to 1 in code below.
+	local    finalOutputStr=""
+
+
+	## Loop through and check for existence of required and/or forbidden files and/or dirs, and/or content.
+	for sItem in "${requiredOrForbiddenFilesDirsOrContent[@]}"; do
+		[[ -z "${sItem}" ]] && continue
+
+		## Extract field values
+		fRowField_ResetIdx
+		fRowField_GetVal  sItem  sItem_RequiredOrForbidden
+		fRowField_GetVal  sItem  sItem_SearchDir
+		fRowField_GetVal  sItem  sItem_SearchFilespec
+		fRowField_GetVal  sItem  sItem_GrepExp
+
+		isForbidden=0 ; [[ "${sItem_RequiredOrForbidden^^}" == 'F' ]]  &&  isForbidden=1
+
+		## First check for existence or not of folder
+		if   [[ ! -d "${sItem_SearchDir}" ]] && ((! isForbidden)); then
+			outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t⚠ WARNING ⚠ - Required folder does not exist.")
+			hasProblem=1
+		elif [[ ! -d "${sItem_SearchDir}" ]] && ((  isForbidden)); then
+			outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t✓ Forbidden folder does not exist.")
+		else
+
+			## Folder exists.
+			## Next check for existence or not of matching files.
+			if [[ -n "${sItem_SearchFilespec}" ]]; then  readarray -t tmpFoundFiles < <(sudo find "${sItem_SearchDir}" -xdev  -iname "${sItem_SearchFilespec}" 2>/dev/null || true)
+			else                                         readarray -t tmpFoundFiles < <(sudo find "${sItem_SearchDir}" -xdev                                   2>/dev/null || true)
+			fi
+
+			## Check for non-existence of files, that don't depend on grepping content.
+			if ((${#tmpFoundFiles[@]} <= 0)) && ((! isForbidden)); then
+				outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t⚠ WARNING ⚠ - Some required files do not exist.")
+					## Need a list of required files NOT found.
+				hasProblem=1
+			elif ((${#tmpFoundFiles[@]} <= 0)) && ((isForbidden)); then
+				outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t✓ Forbidden files do not exist.")
+			else
+
+				## File matches DO exist
+				if [[ -z "${sItem_GrepExp}" ]] && ((isForbidden)); then
+					outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t⚠ WARNING ⚠ - Forbidden files exist:\n")
+					for sItemSub in "${tmpFoundFiles[@]}"; do outStrLinesArr+=("    ${sItemSub}"); done  ## Include a list of the files.
+					hasProblem=1
+				elif [[ -z "${sItem_GrepExp}" ]] && ((! isForbidden)); then
+					outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t✓ Required files exist:\n")
+					for sItemSub in "${tmpFoundFiles[@]}"; do outStrLinesArr+=("    ${sItemSub}"); done  ## Include a list of the files.
+				else
+
+					#echo -e "\nsItem_GrepExp: '${sItem_GrepExp}'\ntmpFoundFiles[@]: '${tmpFoundFiles[@]}'"  #DEBUG
+
+					## File matches do exist, and we are grepping within files
+					readarray -t tmpGrepMatchFiles < <(sudo parallel "grep -iPl '${sItem_GrepExp}' '{}'" ::: "${tmpFoundFiles[@]}" 2>/dev/null | sort -u || true)
+					if (( ${#tmpGrepMatchFiles[@]} <= 0 )) && ((! isForbidden)); then
+						outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t⚠ WARNING ⚠ - Required string match not found, in:\n")
+						for sItemSub in "${tmpFoundFiles[@]}"; do outStrLinesArr+=("    ${sItemSub}"); done  ## Include a list of the files.
+						hasProblem=1
+						#echo '⚠⚠ Required not found.'  #DEBUG
+					elif (( ${#tmpGrepMatchFiles[@]} <= 0 )) && ((isForbidden)); then
+						outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t✓ Forbidden string match not found.")
+						#echo '✓ Forbidden not found.'  #DEBUG
+					elif (( ${#tmpGrepMatchFiles[@]} > 0 )) && ((isForbidden)); then
+						outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t⚠ WARNING ⚠ - Forbidden string match found, in:\n")
+						for sItemSub in "${tmpGrepMatchFiles[@]}"; do outStrLinesArr+=("    ${sItemSub}"); done  ## Include a list of the files.
+						hasProblem=1
+						#echo '⚠⚠ Forbidden found.'  #DEBUG
+					else
+						## File matches do exist, we are grepping within files, string match exists, and that's good.
+						outStrLinesArr+=("'${sItem_SearchDir}'\t'${sItem_SearchFilespec}'\t'${sItem_GrepExp}'\t✓ Required string match found, in:\n")
+						for sItemSub in "${tmpGrepMatchFiles[@]}"; do outStrLinesArr+=("    ${sItemSub}"); done  ## Include a list of the files.
+						#echo '✓ Required found.'  #DEBUG
+					fi
+					#sleep 2  #DEBUG
+
+				fi
+			fi
+		fi
+	done
+
+	## Format list and output results
+	if (( ${#outStrLinesArr} > 0 )); then
+		finalOutputStr="START FOLDER\tFILE SEARCHSPEC\tCONTENT GREP\tRESULT"
+		finalOutputStr="$(echo -e "${finalOutputStr}\n$(printf "%s\n" "${outStrLinesArr[@]}")" | grep -v '^[[:space:]]$' | column -t -s $'\t' | sed 's/^/   /' || true)"
+		echo
+		echo -e "${finalOutputStr}"
+	fi
+
+	echo
+	if ((hasProblem)); then
+		echo "******** WARNING *********"
+		echo "At least one problem was noted above."
+		echo "As long as required modules are met as listed later, this MIGHT be OK."
+		echo "(will resume in 10 seconds)"
+		echo "**************************"
+		echo
+		sleep 10
+	else
+		echo "[ Files and content look good. ]"
+		sleep 3
+	fi
+
+}
+
+
+fBuild_UKI() {
+
+	## Args
+	local -r kernelVersion_t3afe="${1:-}"
+
+	## Constants
+	local -r UKI_FILESPEC="${UKI_DIR}/debian-${kernelVersion_t3afe}.efi"
+
+	## Varialbes
+	local kernelCommandParms=""
+
+	## Validate
+	[[ ! -f "/boot/vmlinuz-${kernelVersion_t3afe}" ]]  &&  { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Calculated kernel filespec not found: '/boot/vmlinuz-${kernelVersion_t3afe}'." >&2 ; return 1; }
+
+	## Read kernel commandline source config file, strip out comments and empty lines, convert to space-delimited.
+	kernelCommandParms="$(grep -v '^\s*#' "${CMDLINE_SOURCEFILE}"  |  grep -v '^\s*$'  |  tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
+
+	echo "[ Building UKI for kernel version: ${kernelVersion_t3afe} ... ]"
+
+	##
+	## DO THE MAGIC
+	##
+	[[ ! -d "${UKI_DIR}" ]] && sudo mkdir -p "${UKI_DIR}"
+	echo
+	echo "Executing command:"
+	echo "sudo dracut  --uefi  --kver '${kernelVersion_t3afe}'  --kernel-cmdline '${kernelCommandParms}'  --force  '${UKI_FILESPEC}'"
+	echo; sleep 2
+	if ((! dryRun)); then
+		sudo dracut  --uefi  --kver "${kernelVersion_t3afe}"  --kernel-cmdline "${kernelCommandParms}"  --force  "${UKI_FILESPEC}"
+		echo
+	fi
+
+	## Show result
+	echo -e "[ '${UKI_FILESPEC}' on the filesystem: ]\n"
+	ls -lAh --color=always "${UKI_FILESPEC}" | ts ' '
+
+	fCheckModuleContents  "${UKI_FILESPEC}"  requiredModules
+
+}
+
+
+fCheckModuleContents(){
+	## Make sure required modules are in the specified .efi module file
+	## Uses parent-scope array ${requiredModules[]}.
+
+	## Args
+	local -r modFile="${1}" #...: '.efi' UKI module file.
+
+	## Variables
+	local -i grepCount=0
+	local -i flaggedResults=0
+	local    allModList=""
+	local    outStr=""
+
+	## Validate
+	[[   -z "${modFile}" ]]            && { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): No UKI module file specified.\n"                                                  >&2 ; return 1; }
+	[[ ! -f "${modFile}" ]]            && { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Specified UKI module file doesn't exist: '${modFile}'\n."                         >&2 ; return 1; }
+	[[ ${#requiredModules[@]} -le 0 ]] && { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): No populated module content array to check for in '${modFile}' via 'grep -P'.\n"  >&2 ; return 1; }
+
+	## Get list of modules
+	echo -e "\n[ Checking '${modFile}' for modules (0 is not good) ... ]\n"
+	allModList="$(lsinitrd "${modFile}" 2>/dev/null | grep -P ' root[ ]+root ')"
+	[[ -z "${allModList}" ]] && { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): No modules were listed in '${modFile}'. Could be a bug in function?\n" >&2 ; return 1; }
+
+	## Checkexistence of required modules and build list
+	flaggedResults=0
+	outStr=""
+	for sItem in "${requiredModules[@]}"; do
+		sItem="$(sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/" <<< "${sItem}")"  ## Strip inner matched single or double quotes from this element, if they exist.
+		[[ -z "${sItem}" ]] && continue
+		grepCount=0 ; grepCount=$(grep -Pc "${sItem}" <<< "${allModList}" 2>/dev/null || true)
+		((grepCount == 0)) && flaggedResults=1
+		[[ -n "${outStr}" ]] && outStr="${outStr}\n"
+		outStr="${outStr}${sItem}\t${grepCount}"
+	done
+
+	## Format list and output results
+	outStr="$(echo -e "${outStr}" | sort -u | column -t -s $'\t' | sed 's/^/  /')"
+	echo -e "${outStr}"
+	if ((! flaggedResults)); then
+		echo -e "\n[ Embedded modules look good.]"; sleep 4
+	else
+		echo
+		echo "******** WARNING *********"
+		echo "At least one necessary module wasn't found in the UKI .efi, as listed above."
+		echo "(will resume in 10 seconds)"
+		echo "**************************"
+		echo
+		sleep 10
+	fi
+
+}
+
+
+fSign_EFIs() {
+	((! doSecureBootSigning)) && return 0
+
+	## Constants
+	local -r MOK_KEY="/etc/mok/mok.key"
+	local -r MOK_CERT="/etc/mok/mok.crt"
+	local -r SYSTEMD_BOOT_SRC="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+
+	## Validate
+	[[ ! -f "${MOK_KEY}" ]]  && { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): MOK key not found: '${MOK_KEY}'.\n"   >&2 ; return 1; }
+	[[ ! -f "${MOK_CERT}" ]] && { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): MOK cert not found: '${MOK_CERT}'.\n" >&2 ; return 1; }
+
+	## Sign all UKIs
+	local -a ukiArr=()
+	readarray -t ukiArr < <(find "${UKI_DIR}"  -maxdepth 1  -iname "${UKI_NAME_WILDCARD}"  2>/dev/null || true)
+	for nextUki in "${ukiArr[@]}"; do
+		[[ -z "${nextUki}" ]] && continue
+		echo "Signing UKI: ${nextUki}"
+		sudo sbsign  --key "${MOK_KEY}"  --cert "${MOK_CERT}"  --output "${nextUki}"  "${nextUki}"
+	done
+
+	## Sign systemd-boot binaries
+	local -a efiArr=(
+		"${ESP_DIR}/EFI/debian/grubx64.efi"
+		"${ESP_DIR}/EFI/BOOT/BOOTX64.EFI"
+		"${ESP_DIR}/EFI/systemd/systemd-bootx64.efi"
+	)
+	for nextEfi in "${efiArr[@]}"; do
+		[[   -z "${nextEfi}" ]] && continue
+		[[ ! -f "${nextEfi}" ]] && { echo "WARNING: '${nextEfi}' not found, skipping." >&2; continue; }
+		echo "Signing: ${nextEfi}"
+		sbsign  --key "${MOK_KEY}"  --cert "${MOK_CERT}"  --output "${nextEfi}"  "${SYSTEMD_BOOT_SRC}"
+	done
+}
+
+
+fSetBootKernelDefaultToLatestMinusOne() {
+	# Find all existing UKIs, sort by version, pick second-newest (n-1)
+	# If only one exists, use that
+
+	## Variables
+	local -a allUKIs=()
+	local -i ukiCount=0
+	local    default_UKI=""
+
+	## Find debian .EFIs in UKI dir.
+	readarray -t allUKIs < <(sudo find "${UKI_DIR}" -maxdepth 1 -iname 'debian-*.efi' -printf '%T@ %f\n'  2>/dev/null  |  sort -rn  |  awk '{print $2}' || true)
+	ukiCount="${#allUKIs[@]}"
+
+	## Validate
+	((ukiCount <= 0))  &&  { echo -e "\nWARNING: No UKIs found, not updating default\n" >&2; return; }
+
+	## Determine default UKI
+	if ((ukiCount > 1)); then  default_UKI="${allUKIs[1]}"   # n-1
+	else                       default_UKI="${allUKIs[0]}"   # only one available
+	fi
+
+	# Update or insert default line in loader.conf
+	echo "[ Setting default boot entry to: ${default_UKI} ... ]"
+	if ((! dryRun)); then
+		if grep -q '^default ' "${LOADER_CONF}"; then
+			sed -i "s|^default .*|default ${default_UKI}|" "${LOADER_CONF}"
+		else
+			echo "default ${default_UKI}" >> "${LOADER_CONF}"
+		fi
+	fi
+}
+
+
+declare -i __fRowField_FieldIdx=0 #..............: 1-based index but pre-increment is 0.
+fRowField_ResetIdx(){ __fRowField_FieldIdx=0; }
+fRowField_AppendVal(){
+	## Args
+	local -n  varName_Row_1mv8exy=${1:-} #......: Name of parent variable to append encoded field idx:value to. (Required or will cryptically fail.)
+	local -r  valStr="${2:-}" #.................: Field value to append. (Optional but can be ''.)
+	local     fieldOverrideIdxOrName=${3:-} #...: Suggested to leave blank to auto-index, will append with next idx. But can override with a custom index, or field name.
+	## Init
+	__fRowField_FieldIdx=$((__fRowField_FieldIdx + 1))
+	[[ -z "${fieldOverrideIdxOrName}" ]]  &&  fieldOverrideIdxOrName="${__fRowField_FieldIdx}"
+	readonly fieldOverrideIdxOrName
+	## Append field
+	[[ -z "${varName_Row_1mv8exy}" ]] && varName_Row_1mv8exy="‗"
+	varName_Row_1mv8exy="${varName_Row_1mv8exy}${fieldOverrideIdxOrName}‗${valStr}‗"
+}
+fRowField_GetVal(){
+	## Args
+	local -n  varName_Row_1mv8fqt=${1:-} #...............................: Name of parent variable to read encoded field idx:value from. (Required or will cryptically fail.)
+	local -n  varName_RetVal_1mv8fqt="${2:-}" #..........................: Name of parent variable to populate result with. (Required or will cryptically fail.)
+	local     fieldOverrideIdxOrName=${3:-} #...: Suggested to leave blank to auto-index, will append with next idx. But can override with a custom index, or field name.
+	## Variables
+	local     retVal=""
+	## Init
+	varName_RetVal_1mv8fqt=""
+	__fRowField_FieldIdx=$((__fRowField_FieldIdx + 1))
+	[[ -z "${fieldOverrideIdxOrName}" ]]  &&  fieldOverrideIdxOrName="${__fRowField_FieldIdx}"
+	readonly fieldOverrideIdxOrName
+	## Get the value
+	retVal="${varName_Row_1mv8fqt}" ; retVal="${retVal#*"‗${fieldOverrideIdxOrName}‗"}" ; retVal="${retVal%%‗*}"
+	varName_RetVal_1mv8fqt="${retVal}"
+}
+
+
+## General constants
+declare mePath="${0}"
+declare meName="$(basename "${mePath}")"
+declare serialDT="$(date '+%Y%m%d-%H%M%S')"
+
+## Logging
+declare logDir="/var/log"
+declare logFile="${logDir}/${meName}.log"
+[[ -f "${logFile}.prev" ]]  &&  rm               "${logFile}.prev"
+[[ -f "${logFile}"      ]]  &&  mv "${logFile}"  "${logFile}.prev"
+
+## Invoke main entry point
+fMain  "${@}" 2>&1 | tee "${logFile}"
+
+echo "[ Output logged to '${logFile}'. ]"
+echo
