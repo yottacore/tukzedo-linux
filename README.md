@@ -76,6 +76,7 @@
 	- [Phase IV: LiveCD .iso with automated installer](#phase-iv-livecd-iso-with-automated-installer)
 	- [Phase V: Official Tukzedo Linux rolling distribution](#phase-v-official-tukzedo-linux-rolling-distribution)
 - [How to create Phase I now](#how-to-create-phase-i-now)
+- [Install or update local scripts](#install-or-update-local-scripts)
 - [Document history](#document-history)
 - [Copyright and license](#copyright-and-license)
 
@@ -496,7 +497,17 @@ __Phase V features__:
 
 ## How to create Phase I now
 
-There is currently one guide: ["Tukzedo Linux on Debian"](https://github.com/t00mietum/tukzedo-linux/blob/main/guides/tukzedo_debian_13_trixie/creation.md)
+There is currently one guide: ["Tukzedo Linux on Debian"](https://github.com/t00mietum/tukzedo-linux/blob/main/guides/debian_13/creation.md)
+
+## Install or update local scripts
+
+These scripts won't necessarily do much good without following an installation guide from the previous section. But you may want to conveniently update your existing local scripts:
+
+- Install or update local Tukzedo scripts for Debian Trixie with latest dev versions:
+
+	~~~bash
+	curl -fsSL https://raw.githubusercontent.com/t00mietum/tukzedo-linux/main/install_dev.bash | bash
+	~~~
 
 ## Document history
 
