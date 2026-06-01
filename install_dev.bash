@@ -20,8 +20,8 @@
 ##		- Warns first if any existing local files are newer.
 ##		- Install location: /usr/local/sbin
 ##	Notes:
-##		- You don't need to run this installer to use the template and modules. You can just copy the files from
-##		  your closest matching distribution (e.g. `tukzedo-linux/github/*`) to `/usr/local/sbin` and call it done.
+##		- You don't have to run this installer. You can just copy the files from your closest matching
+##		  distribution (e.g. `tukzedo-linux/github/*`) to `/usr/local/sbin`.
 ##	History: At bottom of script. (Maintained separately from and/or in addition to, cloud-based version control.)
 
 ##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
