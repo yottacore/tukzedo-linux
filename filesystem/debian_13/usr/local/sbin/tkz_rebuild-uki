@@ -1,14 +1,19 @@
 #!/bin/bash
-# shellcheck disable=2001  ## Complaining about use of sed istead of bash search & replace.
-# shellcheck disable=2002  ## Useless use of cat. Except cat works well, is very readable, and screw syntax purity.
-# shellcheck disable=2004  ## Inappropriate complaining of "$/${} is unnecessary on arithmetic variables."
-# shellcheck disable=2012  ## 'Use find instead of ls to better handle non-alphanumeric filenames.''
-# shellcheck disable=2034  ## Unused variables.
-# shellcheck disable=2053  ## Disable Yoda Notation warning.
-# shellcheck disable=2119  ## Disable confusing and inapplicable warning about function's $1 meaning script's $1.
-# shellcheck disable=2120  ## OK with declaring variables that accept arguments, without calling with arguments (this is 'overloading').
-# shellcheck disable=2129  ## Combine args for multiple echo. No.
-# shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+#  shellcheck disable=2001  ## Complaining about use of sed istead of bash search & replace.
+#  shellcheck disable=2004  ## Inappropriate complaining of "$/${} is unnecessary on arithmetic variables."
+#  shellcheck disable=2012  ## 'Use find instead of ls to better handle non-alphanumeric filenames.'
+#  shellcheck disable=2034  ## Unused variables.
+#  shellcheck disable=2053  ## Disable Yoda Notation warning.
+#  shellcheck disable=2119  ## Disable confusing and inapplicable warning about function's $1 meaning script's $1.
+#  shellcheck disable=2120  ## OK with declaring variables that accept arguments, without calling with arguments (this is 'overloading').
+#  shellcheck disable=2129  ## Combine args for multiple echo. No.
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+## shellcheck disable=2002  ## Useless use of cat.
+
+##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
 
 ##	Purpose:
 ##		- Custom script that called by a custom trigger any time the kernel or initrd is updated, or UKI otherwise needs to be rebuilt.
@@ -19,15 +24,8 @@
 ##		- /etc/kernel/uki-cmdline.conf
 ##	Notes:
 ##		- The dracut/UKI build process can't handle blank lines or comment lines. But this script strips them out to a valid single-line command string.
-##	History:
-##		- 20260310 JC: Created.
-##		- 20260314-18 JC:
-##			- Disable and delete ZFS cache file.
-##			- Added pre-checking of file content.
-##			- Mask boot-efi.mount.
-##		- 20260322 JC:
-##			- Added fSign_EFIs().
-##			- Changed occurrences of 'exit 1' to 'return 1'.
+##	History: At bottom of script. (Maintained separately from and/or in addition to, cloud-based version control.)
+
 
 set -euo pipefail
 
@@ -635,3 +633,14 @@ fMain  "${@}" 2>&1 | tee "${logFile}"
 
 echo "[ Output logged to '${logFile}'. ]"
 echo
+
+
+##	History:
+##		- 20260310 JC: Created.
+##		- 20260314-18 JC:
+##			- Disable and delete ZFS cache file.
+##			- Added pre-checking of file content.
+##			- Mask boot-efi.mount.
+##		- 20260322 JC:
+##			- Added fSign_EFIs().
+##			- Changed occurrences of 'exit 1' to 'return 1'.
