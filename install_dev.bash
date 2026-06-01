@@ -21,7 +21,7 @@
 ##		- Install location: /usr/local/sbin
 ##	Notes:
 ##		- You don't have to run this installer. You can just copy the files from your closest matching
-##		  distribution (e.g. `tukzedo-linux/github/*`) to `/usr/local/sbin`.
+##		  distribution (e.g. `tukzedo-linux/github/*`) to `/usr/local/sbin`, and mark them executable.
 ##	History: At bottom of script. (Maintained separately from and/or in addition to, cloud-based version control.)
 
 ##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
@@ -62,7 +62,7 @@ declare warnExisting=""
 
 ## Prompt user to continue
 userInput=""
-echo -e "\nGoing to install ${FRIENDLY_NAME}:\n"
+echo -e "\nGoing to install runtime scripts for ${FRIENDLY_NAME}:\n"
 echo "  - Source URL prefix ......: ${GITHUB_URL_PREFIX}/"
 echo "  - Install dir ............: ${TARGET_DIR}"
 echo "  - Current \$USER ..........: ${USER}"
