@@ -511,9 +511,10 @@ These scripts won't necessarily do much good without following an installation g
 
 ## Document history
 
-- 2026-03-31: First "real" draft.
-- 2026-04-13: Expanded.
+- 2026-06-01: Added section "Install or update local scripts"
 - 2026-04-15: Expanded and fixed a few minor technical and factual inaccuracies with the help of an LLM.
+- 2026-04-13: Expanded.
+- 2026-03-31: First "real" draft.
 
 ## Copyright and license
 

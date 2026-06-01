@@ -41,6 +41,7 @@ This is a recipie and intructions for creating your own Tukzedo Linux, with a De
 - [Introduction](#introduction)
 - [Creation steps](#creation-steps)
 	- [Remaining steps to expand on and format better](#remaining-steps-to-expand-on-and-format-better)
+	- [Install or update local scripts](#install-or-update-local-scripts)
 - [Document history](#document-history)
 - [Copyright and license](#copyright-and-license)
 
@@ -1264,11 +1265,22 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 
 -->
 
+### Install or update local scripts
+
+These scripts won't necessarily do much good without following an installation guide from the previous section. But you may want to conveniently update your existing local scripts:
+
+- Install or update local Tukzedo scripts for Debian Trixie with latest dev versions:
+
+	~~~bash
+	curl -fsSL https://raw.githubusercontent.com/t00mietum/tukzedo-linux/main/install_dev.bash | bash
+	~~~
+
 ## Document history
 
+- 2026-06-01: Added section "Install or update local scripts"
 - 2026-03-31: Template put in Git.
 
 ## Copyright and license
 
-> Copyright © 2020-2026 t00mietum (ID: f⍒Ê🝅ĜᛎỹqFẅ▿⍢Ŷ‡ʬẼᛏ🜣)<br>
-> Licensed under GNU GPL v2 <https://www.gnu.org/licenses/gpl-2.0.html>. No warranty.
+> Copyright © 2026 t00mietum (ID: f⍒Ê🝅ĜᛎỹqFẅ▿⍢Ŷ‡ʬẼᛏ🜣)<br>
+> Licensed under The GNU General Public License v2.0 or later <https://spdx.org/licenses/GPL-2.0-or-later.html>. No warranty.
