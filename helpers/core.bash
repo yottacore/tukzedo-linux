@@ -21,10 +21,15 @@
 
 ##	Purpose:
 ##		- Functions to be used by potentially all other scripts, and/or directly from the CLI.
-##		- Loaded into caller's environment via `source  core.sh  'script_caller_id_57mz3qsniu'`
+##		- Loaded into caller's environment via `source  core.bash  'script_caller_id_57mz3qsniu'`
 ##		- By itself, this script doesn't do anything, it just defines functions and variables.
 ##	Copyright and license ...: Toward bottom of this file.
-##	History .................: At bottom of this file.
+##	History: At bottom of script. (Maintained separately from and/or in addition to, cloud-based version control.)
+
+##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
 
 
 #•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
@@ -103,10 +108,10 @@ fDetectEnvironmentAndDoEarlyInit(){
 			fEcho_Clean
 			#           X-------------------------------------------------------------------------------X
 			fEcho_Clean "The chroot hostname doesn't match what's expected. Are you sure you've"
-			fEcho_Clean "chrooting FROM the same system as defined in lib/settings.sh?"
+			fEcho_Clean "chrooting FROM the same system as defined in lib/settings.bash?"
 			fEcho_Clean
 			fEcho_Clean "  \$HOSTNAME .................................: '${HOSTNAME}'"
-			fEcho_Clean "  \$chrootHostHostname from lib/settings.sh ..: '${newHostname}'"
+			fEcho_Clean "  \$chrootHostHostname from lib/settings.bash ..: '${newHostname}'"
 			fThrowError; return 1
 
 		elif [[ "${hostFileContents}" != "${newHostname}" ]]; then
@@ -116,7 +121,7 @@ fDetectEnvironmentAndDoEarlyInit(){
 			fEcho_Clean "you're in is for the new system?"
 			fEcho_Clean
 			fEcho_Clean "  /etc/hostname ......................: '${hostFileContents}'"
-			fEcho_Clean "  \$newHostname from lib/settings.sh ..: '${newHostname}'"
+			fEcho_Clean "  \$newHostname from lib/settings.bash ..: '${newHostname}'"
 			fThrowError; return 1
 
 		else
@@ -162,8 +167,8 @@ fDetectEnvironmentAndDoEarlyInit(){
 		fEcho_Clean
 		fEcho_Clean "  /etc/hostname .........................: '${hostFileContents}'"
 		fEcho_Clean "  \$HOSTNAME .............................: '${HOSTNAME}'"
-		fEcho_Clean "  \$chrootHostHostname from settings.sh ..: '${chrootHostHostname}'"
-		fEcho_Clean "  \$newHostname from settings.sh .........: '${newHostname}'"
+		fEcho_Clean "  \$chrootHostHostname from settings.bash ..: '${chrootHostHostname}'"
+		fEcho_Clean "  \$newHostname from settings.bash .........: '${newHostname}'"
 		fThrowError; return 1
 
 	fi
@@ -309,8 +314,8 @@ else
 	module_loaded_core=1
 
 	## Load settings module
-	loadFile="$(dirname "${BASH_SOURCE[0]}")/settings.sh"
-	if [[ ! -f "${loadFile}" ]]; then  echo -e "\nError in $(basename "${BASH_SOURCE[0]}"): 'settings.sh' not found.\n"; return 1
+	loadFile="$(dirname "${BASH_SOURCE[0]}")/settings.bash"
+	if [[ ! -f "${loadFile}" ]]; then  echo -e "\nError in $(basename "${BASH_SOURCE[0]}"): 'settings.bash' not found.\n"; return 1
 	else                               source  "${loadFile}"  'script_caller_id_57mz3qsniu'
 	fi
 
@@ -566,23 +571,7 @@ else
 fi
 
 
-##	Copyright
-##		Copyright © 2022-2026 t00mietum (ID: f⍒Ê🝅ĜᛎỹqFẅ▿⍢Ŷ‡ʬẼᛏ🜣)
-##		Licensed under the GNU General Public License v2.0 or later. Full text at:
-##			https://spdx.org/licenses/GPL-2.0-or-later.html
-##		SPDX-License-Identifier: GPL-2.0-or-later
-##			Preamble:
-##				This program is free software: you can redistribute it and/or modify
-##				it under the terms of the GNU General Public License as published by
-##				the Free Software Foundation, either version 2 of the License, or
-##				(at your option) any later version.
-##
-##				This program is distributed in the hope that it will be useful,
-##				but WITHOUT ANY WARRANTY; without even the implied warranty of
-##				MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-##				GNU General Public License for more details.
-##
-##				You should have received a copy of the GNU General Public License
-##				along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
 ##	History:
 ##		- 20260401: Separated existing functions in documentation, into actual script form.

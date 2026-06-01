@@ -8,24 +8,7 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v1.0.0-beta.1
-
-### Added
-
-- Finished first full draft of README.md [20260416]
-
-- Finished first full draft of FAQ.md [20260416]
-
-- Finished first full project structure [20260416]
-
-- `guides/.../cloning.md` now has all the steps in it from the original `bash` format, but most are HTML-commented out because the formatting break `.md`. [≅20260414]
-
-- `guides/.../creation.md` now has all the steps in it from the original `bash` format, but most are HTML-commented out because the formatting break `.md`. [20260415]
-
-### Removed
-
-### Other work
-
+<!--
 ## NEXT VERSION
 
 ### Notes
@@ -37,4 +20,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Removed
 
 ### Other work
+-->
 
+## v1.0.0-beta1
+
+### Added
+
+- Added scripts that make the guts of Tukzedo. [20260601]
+
+### Other work
+
+- Finished first full draft of README.md [20260416]
+
+- Finished first full draft of FAQ.md [20260416]
+
+- Finished first full project structure [20260416]
+
+- `guides/.../cloning.md` now has all the steps in it from the original `bash` format, but most are HTML-commented out because the formatting break `.md`. [≅20260414]
+
+- `guides/.../creation.md` now has all the steps in it from the original `bash` format, but most are HTML-commented out because the formatting break `.md`. [20260415]

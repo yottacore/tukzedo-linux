@@ -518,4 +518,4 @@ These scripts won't necessarily do much good without following an installation g
 ## Copyright and license
 
 > Copyright © 2026 t00mietum (ID: f⍒Ê🝅ĜᛎỹqFẅ▿⍢Ŷ‡ʬẼᛏ🜣)<br>
-> Licensed under GNU GPL v2 <https://www.gnu.org/licenses/gpl-2.0.html>. No warranty.
+> Licensed under The GNU General Public License v2.0 or later <https://spdx.org/licenses/GPL-2.0-or-later.html>. No warranty.
