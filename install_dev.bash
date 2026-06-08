@@ -94,7 +94,7 @@ done
 
 ## Show installed files
 echo -e "\nInstalled files:"
-ls -lA --color=always "${TARGET_DIR}"/tkz_* 2>/dev/null || echo "  (No files found.)"
+${SUDO_CMD} ls -lA --color=always "${TARGET_DIR}"/tkz_* 2>/dev/null || echo "  (No files found.)"
 
 echo -e "\n[ Done. ]\n"
 
