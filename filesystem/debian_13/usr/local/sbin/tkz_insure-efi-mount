@@ -1,0 +1,104 @@
+#!/bin/sh
+
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## Initialize and start log
+mePath_1mvp0kj="/etc/rc.localx9.d/020-insure-efi-mount"
+echo "[ ${mePath_1mvp0kj} ]"
+"/usr/local/bin/x9/sh/x9startup-log"  "${mePath_1mvp0kj}"  begin  2>/dev/null || true
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+
+fMain() {
+
+	sleep 8  ## Give things some time to settle down.
+
+	## Flags
+	dirExists_boot=0            ; [ -d /boot                                      ]  &&  dirExists_boot=1
+	dirHasContents_boot=0       ; [ -n "$(ls -1A /boot/     2>/dev/null || true)" ]  &&  dirHasContents_boot=1
+	dirExists_boot_efi=0        ; [ -d /boot/efi                                  ]  &&  dirExists_boot_efi=1
+	dirHasContents_boot_efi=0   ; [ -n "$(ls -1A /boot/efi/ 2>/dev/null || true)" ]  &&  dirHasContents_boot_efi=1
+	isMounted_boot_efi=0        ; [ -n "$(findmnt /boot/efi 2>/dev/null || true)" ]  &&  isMounted_boot_efi=1
+
+	#DEBUG
+	#echo "dirExists_boot ............: '${dirExists_boot}'"
+	#echo "dirHasContents_boot .......: '${dirHasContents_boot}'"
+	#echo "dirExists_boot_efi ........: '${dirExists_boot_efi}'"
+	#echo "dirHasContents_boot_efi ...: '${dirHasContents_boot_efi}'"
+	#echo "isMounted_boot_efi ........: '${isMounted_boot_efi}'"
+
+	## Check to see if we're all good and have nothing to do.
+	[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"   = "1_1_1" ]  &&  { fShowMsg "'/boot/efi' seems to already be properly mounted, nothing to do."                            ; return 0; }
+
+	## Check to see if a problem exists that could be made worse if we tried to solve here.
+	[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"   = "0_1_1" ]  &&  { fShowMsg "Can't mount '/boot/efi' because it seems a real dir exists with that name and has contents." ; return 1; }
+	[ "${dirExists_boot}"                                                        = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because '/boot' doesn't exist (yet?)."                               ; return 1; }
+	[ "${dirExists_boot_efi}"                                                    = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because that mountpoint dir doesn't exist."                          ; return 1; }
+	[ "${dirHasContents_boot}"                                                   = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because '/boot' is empty, possibly not mounted (yet?)."              ; return 1; }
+
+	##
+	## If we made it this far, /boot/efi is either mounted but shadowed by later-mounted /boot, or just not mounted in the first place. Either way, we know the dir exists but is empty.
+
+	if [ "${isMounted_boot_efi}" = "0" ]; then
+		fShowMsg "FYI: '/boot/efi' was not mounted before."
+	else
+
+		## Try to unmount /boot/efi if necessary (e.g. it's mounted but shadowed by /boot mounted later.)
+		fShowMsg "FYI: '/boot/efi' was previously mounted, but apparently shadowed and appears empty."
+		fShowMsg "Attempting to fix, first by unmounting '/boot/efi' ..."
+		sudo umount -fR /boot/efi 2>/dev/null || sudo umount -fRl /boot/efi
+
+		## Re-init flags
+		dirExists_boot_efi=0        ; [ -d /boot/efi                                  ]  &&  dirExists_boot_efi=1
+		dirHasContents_boot_efi=0   ; [ -n "$(ls -1A /boot/efi/ 2>/dev/null || true)" ]  &&  dirHasContents_boot_efi=1
+		isMounted_boot_efi=0        ; [ -n "$(findmnt /boot/efi 2>/dev/null || true)" ]  &&  isMounted_boot_efi=1
+
+		## New validation
+		[ "${isMounted_boot_efi}"                                                    = "1"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because it is being shadowed by a parent mount (e.g. '/boot'), but '/boot/efi' refuses to unmount in order to be remounted correctly." ; return 1; }
+		## Re-validate earlier validation
+		[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"   = "0_1_1" ]  &&  { fShowMsg "Can't mount '/boot/efi' because it seems a real dir exists with that name and has contents." ; return 1; }
+		[ "${dirExists_boot_efi}"                                                    = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because that mountpoint dir doesn't exist."                 ; return 1; }
+		[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"  != "0_1_0" ]  &&  { fShowMsg "Can't mount '/boot/efi' because of an unexpected combination of states of [dir mounted?], [dir exists?], and [dir has contents?]." ; return 1; }
+
+	fi
+
+	## OK we are going to re-trigger /etc/fstab, wich should in theory remount /boot/efi
+	fShowMsg "Attempting to mount '/boot/efi' according to its definition in '/etc/fstab' ..."
+	sudo systemctl daemon-reload; sudo mount /boot/efi
+
+	## Re-init flags
+	dirExists_boot_efi=0        ; [ -d /boot/efi                                  ]  &&  dirExists_boot_efi=1
+	dirHasContents_boot_efi=0   ; [ -n "$(ls -1A /boot/efi/ 2>/dev/null || true)" ]  &&  dirHasContents_boot_efi=1
+	isMounted_boot_efi=0        ; [ -n "$(findmnt /boot/efi 2>/dev/null || true)" ]  &&  isMounted_boot_efi=1
+
+	## Final validation
+	[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"   = "0_1_1" ]  &&  { fShowMsg "Can't mount '/boot/efi' because a real dir exists with that name and has contents." ; return 1; }
+	[ "${dirExists_boot_efi}"                                                    = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because that mountpoint dir doesn't exist."                 ; return 1; }
+	[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"  != "1_1_1" ]  &&  { fShowMsg "Can't mount '/boot/efi' because of an unexpected combination of states of dir is mounted, dir exists, and dir has contents." ; return 1; }
+
+	fShowMsg "Successfully mounted '/boot/efi'."
+
+}
+
+fShowMsg(){
+	echo "[ ${mePath_1mvp0kj}.fMain(): ${1} ]"
+	"/usr/local/bin/x9/sh/x9startup-log"  "${mePath_1mvp0kj}"  comment "${1}"  2>/dev/null || true
+}
+
+fMain
+
+
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+"/usr/local/bin/x9/sh/x9startup-log"  "${mePath_1mvp0kj}"  end  2>/dev/null || true
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+
+##	Purpose:
+##		- Makes sure UEFI partition is mounted at /boot/efi. If not, mounts it.
+##		- This is important on some setups, e.g. complicated ZFS setups, because the /boot zpool might mount AFTER /boot/efi, thus hiding it.
+##			- To fix, first the original /boot/efi needs to be unmounted, then remounted.
+##	Notes:
+##		Remember to not 'exit' anything, anywhere, in the chain of rc.local processing.
+##	History:
+##		- 20260318 JC: Created.
+##		- 20260326 JC: Only `mount /boot/efi`, not `mount -a`.
+##		- 20260327 JC: Fixed a logic error that was preventing proper mounting.
