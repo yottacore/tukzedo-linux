@@ -43,7 +43,7 @@ fMain(){
 	local -ri require_USB=1
 	local -ri require_SSHD=1
 	local -ri require_Systemd_Boot=1
-	local -ri require_Grub=1 #...........: If require_Systemd_Boot=1, then this means "Grub as a fallback selection".
+	local -ri require_Grub=0 #...........: If require_Systemd_Boot=1, then this means "Grub as a fallback selection".
 	local -ri require_UKI=1
 	local -ri doSecureBootSigning=1
 
@@ -209,10 +209,9 @@ fPopulateCheckArrays(){
 
 	## USB unlock key
 		if ((require_USB)); then :
-			#	requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/module-setup.sh")
-			#	requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.service")
-			#	requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.service")
-			#	requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.sh")
+			requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.service")
+			requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/module-setup.sh")
+			requiredFiles+=("/usr/lib/dracut/modules.d/99usb-unlock/usb-unlock.sh")
 			requiredModules+=("ext4")
 			requiredModules+=("sbin/usb-unlock.sh")
 			requiredModules+=("usb-unlock.service")
@@ -220,8 +219,8 @@ fPopulateCheckArrays(){
 
 	## SSHD
 		if ((require_SSHD)); then :
-			#	requiredFiles+=("/root/.ssh/authorized_keys")
-			#	requiredFiles+=("/root/.ssh/known_hosts")
+			requiredFiles+=("/root/.ssh/authorized_keys")
+			requiredFiles+=("/root/.ssh/known_hosts")
 			requiredModules+=("authorized_keys")
 			requiredModules+=("rng")
 			requiredModules+=("ssh_host")
@@ -230,8 +229,8 @@ fPopulateCheckArrays(){
 
 	## ZFS
 		if ((require_Root_ZFS)); then
-			#	requiredFiles+=("/usr/lib/dracut/modules.d/99zfs-force-import/force-import.sh")
-			#	requiredFiles+=("/usr/lib/dracut/modules.d/99zfs-force-import/module-setup.sh")
+			requiredFiles+=("/usr/lib/dracut/modules.d/99zfs-force-import/force-import.sh")
+			requiredFiles+=("/usr/lib/dracut/modules.d/99zfs-force-import/module-setup.sh")
 			__fPopulateContentCheckArray      REQ   '/etc/'                            'fstab'             '[ ]+/boot/efi[ ]+vfat[ ]+.*x-systemd.after=zfs-import.target[ ]+'
 			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'add_dracutmodules\+=.* zfs '
 			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'force_dracutmodules\+=.* zfs '
@@ -644,3 +643,6 @@ echo
 ##		- 20260322 JC:
 ##			- Added fSign_EFIs().
 ##			- Changed occurrences of 'exit 1' to 'return 1'.
+##		- 20260608 JC:
+##			- Don't check Grub.
+##			- Uncommented all file checks.
