@@ -45,6 +45,9 @@ declare -r TARGET_DIR="/usr/local/sbin"
 declare -a sourceFiles=()
 declare -a targetFiles=()
 
+sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_insure-efi-mount")
+targetFiles+=("${TARGET_DIR}/tkz_insure-efi-mount")
+
 sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_rebuild-uki")
 targetFiles+=("${TARGET_DIR}/tkz_rebuild-uki")
 
@@ -78,7 +81,7 @@ if [[ -n "${SUDO_CMD}" ]]; then
 	${SUDO_CMD} echo "[ Sudo got. ]"
 fi
 
-## Make dir
+## Make target dir
 [[ -d "${TARGET_DIR}" ]]  ||  ${SUDO_CMD} mkdir -p "${TARGET_DIR}"
 
 ## Download and install
