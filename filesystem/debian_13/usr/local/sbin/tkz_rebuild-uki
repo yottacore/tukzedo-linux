@@ -90,6 +90,7 @@ fMain(){
 		echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): '${ESP_DIR}' doesn't appear to be a vfat filesystem. Please mount it correctly and try again.\n" >&2
 		return 1
 	fi
+	echo "[ Verified that '${ESP_DIR}' is a mounted vfat filesystem. ]"
 
 	## If not --all, and no version specified, assume current
 	{ ((! doAll)) && [[ -z "${kernelVersion_t3afd}" ]]; } && kernelVersion_t3afd="$(uname -r)"
