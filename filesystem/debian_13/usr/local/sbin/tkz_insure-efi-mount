@@ -10,7 +10,7 @@ echo "[ ${mePath_1mvp0kj} ]"
 
 fMain() {
 
-	sleep 8  ## Give things some time to settle down.
+	sleep 5  ## Give things some time to settle down.
 
 	## Flags
 	dirExists_boot=0            ; [ -d /boot                                      ]  &&  dirExists_boot=1

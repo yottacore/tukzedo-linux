@@ -62,9 +62,7 @@ fMain(){
 	local -a forbiddenModules=() #...........................: List of modules that cannot be in UKI .efi files.
 	local -a requiredOrForbiddenFilesDirsAndOrContent=() #...: Each array item contains: isForbidded [REQUIRE or FORBID], fileOrDirPath [req str], matchRegex [opt str]
 	fPopulateCheckArrays
-	readonly requiredModules
-	readonly forbiddenModules
-	readonly requiredOrForbiddenFilesDirsOrContent
+	readonly requiredModules  forbiddenModules  requiredOrForbiddenFilesDirsOrContent
 
 	## Variables
 	local doAll=0
@@ -82,6 +80,16 @@ fMain(){
 		esac
 	done
 	{ ((doAll)) && [[ -n "${kernelVersion_t3afd}" ]]; } && fSyntax
+
+	## Make sure /boot/efi is vfat and mounted.
+	if ! mountpoint -q "${ESP_DIR}" 2>/dev/null; then
+		echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): '${ESP_DIR}' doesn't appear to be mounted. Please mount it and try again.\n" >&2
+		return 1
+	fi
+	if ! mount | grep " ${ESP_DIR} " | grep -q "vfat"; then
+		echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): '${ESP_DIR}' doesn't appear to be a vfat filesystem. Please mount it correctly and try again.\n" >&2
+		return 1
+	fi
 
 	## If not --all, and no version specified, assume current
 	{ ((! doAll)) && [[ -z "${kernelVersion_t3afd}" ]]; } && kernelVersion_t3afd="$(uname -r)"
@@ -646,3 +654,4 @@ echo
 ##		- 20260608 JC:
 ##			- Don't check Grub.
 ##			- Uncommented all file checks.
+##			- Make sure /boot/efi is vfat and mounted.

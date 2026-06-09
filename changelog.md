@@ -26,6 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Updated `tkz_rebuild-uki` to be more complete, ignore Grub by default, and check if `/boot/efi` is mounted before running.
+
+- Added (and bugfixed) `tkz_insure-efi-mount`, already existed in a different (non-github) project.
+
 - Added scripts that make the guts of Tukzedo. [20260601]
 
 ### Other work
