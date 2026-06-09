@@ -150,8 +150,8 @@ fPopulateCheckArrays(){
 
 	## UKI efi [re]build
 		if ((require_UKI)); then
-			__fPopulateContentCheckArray      REQ   '/etc/kernel/postinst.d/'      '99-rebuild-uki'    'rebuild-uki'
-			__fPopulateContentCheckArray      REQ   '/usr/local/'                  'rebuild-uki'
+			__fPopulateContentCheckArray      REQ   '/etc/kernel/postinst.d/'      '99-rebuild-uki'    'tkz_rebuild-uki'
+			__fPopulateContentCheckArray      REQ   '/usr/local/'                  'tkz_rebuild-uki'
 			if ((require_LUKS)); then :
 				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                 'uki-cmdline.conf'  'rd.luks.name=[\-0-9a-f]+=[^[:space:]]+'
 			fi
