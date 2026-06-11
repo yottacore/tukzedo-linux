@@ -49,6 +49,27 @@ fMain(){
 
 	## Validate
 	{ ((require_Root_ZFS)) && ((require_Root_Btrfs)); }  &&  { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): It makes no sense to have root on both ZFS and Btrfs.\n" >&2 ; return 1; }
+	which awk         2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'awk'.\n"                       >&2 ; return 1; }
+	which basename    2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'basename'.\n"                  >&2 ; return 1; }
+	which column      2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'column'.\n"                    >&2 ; return 1; }
+	which dracut      2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'dracut'.\n"                    >&2 ; return 1; }
+	which find        2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'find'.\n"                      >&2 ; return 1; }
+	which grep        2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'grep'.\n"                      >&2 ; return 1; }
+	which lsinitrd    2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'lsinitrd' (from dracut).\n"    >&2 ; return 1; }
+	which mount       2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'mount'.\n"                     >&2 ; return 1; }
+	which mountpoint  2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'mountpoint.\n"                 >&2 ; return 1; }
+	which parallel    2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'parallel' (GNU parallel).\n"   >&2 ; return 1; }
+	which sbsign      2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'sbsign' (from sbsigntool).\n"  >&2 ; return 1; }
+	which sed         2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'sed'.\n"                       >&2 ; return 1; }
+	which sleep       2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'sleep'.\n"                     >&2 ; return 1; }
+	which sort        2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'sort'.\n"                      >&2 ; return 1; }
+	which systemctl   2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'systemctl.\n"                  >&2 ; return 1; }
+	which tee         2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'tee'.\n"                       >&2 ; return 1; }
+	which tr          2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'tr'.\n"                        >&2 ; return 1; }
+	which ts          2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'ts' (from moreutils).\n"       >&2 ; return 1; }
+	which uname       2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'uname'.\n"                     >&2 ; return 1; }
+	which zpool       2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'zpool'.\n"                     >&2 ; return 1; }
+	parallel --version 2>&1 | grep -iq 'GNU parallel' || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): 'parallel' command appears to be the old default version. Install the newer *GNU* parallel via: 'sudo apt install parallel'.\n" >&2 ; return 1; }
 
 	## Constants
 	local -r ESP_DIR="/boot/efi"
@@ -656,3 +677,6 @@ echo
 ##			- Don't check Grub.
 ##			- Uncommented all file checks.
 ##			- Make sure /boot/efi is vfat and mounted.
+##		- 20260611 JC:
+##			- Added early script dependency checks.
+##			- Added `/boot` backup functionality, and retained backup pruning.
