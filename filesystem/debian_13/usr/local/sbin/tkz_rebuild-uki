@@ -48,28 +48,28 @@ fMain(){
 	local -ri doSecureBootSigning=1
 
 	## Validate
-	{ ((require_Root_ZFS)) && ((require_Root_Btrfs)); }  &&  { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): It makes no sense to have root on both ZFS and Btrfs.\n" >&2 ; return 1; }
-	which awk         2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'awk'.\n"                       >&2 ; return 1; }
-	which basename    2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'basename'.\n"                  >&2 ; return 1; }
-	which column      2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'column'.\n"                    >&2 ; return 1; }
-	which dracut      2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'dracut'.\n"                    >&2 ; return 1; }
-	which find        2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'find'.\n"                      >&2 ; return 1; }
-	which grep        2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'grep'.\n"                      >&2 ; return 1; }
-	which lsinitrd    2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'lsinitrd' (from dracut).\n"    >&2 ; return 1; }
-	which mount       2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'mount'.\n"                     >&2 ; return 1; }
-	which mountpoint  2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'mountpoint.\n"                 >&2 ; return 1; }
-	which parallel    2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'parallel' (GNU parallel).\n"   >&2 ; return 1; }
-	which sbsign      2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'sbsign' (from sbsigntool).\n"  >&2 ; return 1; }
-	which sed         2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'sed'.\n"                       >&2 ; return 1; }
-	which sleep       2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'sleep'.\n"                     >&2 ; return 1; }
-	which sort        2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'sort'.\n"                      >&2 ; return 1; }
-	which systemctl   2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'systemctl.\n"                  >&2 ; return 1; }
-	which tee         2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'tee'.\n"                       >&2 ; return 1; }
-	which tr          2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'tr'.\n"                        >&2 ; return 1; }
-	which ts          2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'ts' (from moreutils).\n"       >&2 ; return 1; }
-	which uname       2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'uname'.\n"                     >&2 ; return 1; }
-	which zpool       2>/dev/null || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Dependency not installed: 'zpool'.\n"                     >&2 ; return 1; }
-	parallel --version 2>&1 | grep -iq 'GNU parallel' || { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): 'parallel' command appears to be the old default version. Install the newer *GNU* parallel via: 'sudo apt install parallel'.\n" >&2 ; return 1; }
+	{ ((require_Root_ZFS)) && ((require_Root_Btrfs)); }  &&  { error -e "\nERROR in ${meName}.${FUNCNAME[0]}(): It makes no sense to have root on both ZFS and Btrfs.\n" >&2 ; return 1; }
+	which awk         &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'awk'.\n"                       >&2 ; return 1; }
+	which basename    &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'basename'.\n"                  >&2 ; return 1; }
+	which column      &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'column'.\n"                    >&2 ; return 1; }
+	which dracut      &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'dracut'.\n"                    >&2 ; return 1; }
+	which find        &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'find'.\n"                      >&2 ; return 1; }
+	which grep        &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'grep'.\n"                      >&2 ; return 1; }
+	which lsinitrd    &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'lsinitrd' (from dracut).\n"    >&2 ; return 1; }
+	which mount       &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'mount'.\n"                     >&2 ; return 1; }
+	which mountpoint  &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'mountpoint.\n"                 >&2 ; return 1; }
+	which parallel    &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'parallel' (GNU parallel).\n"   >&2 ; return 1; }
+	which sbsign      &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'sbsign' (from sbsigntool).\n"  >&2 ; return 1; }
+	which sed         &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'sed'.\n"                       >&2 ; return 1; }
+	which sleep       &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'sleep'.\n"                     >&2 ; return 1; }
+	which sort        &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'sort'.\n"                      >&2 ; return 1; }
+	which systemctl   &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'systemctl.\n"                  >&2 ; return 1; }
+	which tee         &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'tee'.\n"                       >&2 ; return 1; }
+	which tr          &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'tr'.\n"                        >&2 ; return 1; }
+	which ts          &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'ts' (from moreutils).\n"       >&2 ; return 1; }
+	which uname       &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'uname'.\n"                     >&2 ; return 1; }
+	which zpool       &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'zpool'.\n"                     >&2 ; return 1; }
+	parallel --version 2>&1 | grep -iq 'GNU parallel' || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): 'parallel' command appears to be the old default version. Install the newer *GNU* parallel via: 'sudo apt install parallel'.\n" >&2 ; return 1; }
 
 	## Constants
 	local -r ESP_DIR="/boot/efi"
@@ -104,11 +104,11 @@ fMain(){
 
 	## Make sure /boot/efi is vfat and mounted.
 	if ! mountpoint -q "${ESP_DIR}" 2>/dev/null; then
-		echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): '${ESP_DIR}' doesn't appear to be mounted. Please mount it and try again.\n" >&2
+		echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): '${ESP_DIR}' doesn't appear to be mounted. Please mount it and try again.\n" >&2
 		return 1
 	fi
 	if ! mount | grep " ${ESP_DIR} " | grep -q "vfat"; then
-		echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): '${ESP_DIR}' doesn't appear to be a vfat filesystem. Please mount it correctly and try again.\n" >&2
+		echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): '${ESP_DIR}' doesn't appear to be a vfat filesystem. Please mount it correctly and try again.\n" >&2
 		return 1
 	fi
 	echo "[ Verified that '${ESP_DIR}' is a mounted vfat filesystem. ]"
@@ -141,7 +141,7 @@ fMain(){
 		## Build UKI for ALL kernels found under /boot
 		local -a allKernels=()
 		readarray -t allKernels < <(sudo find /boot -maxdepth 1 -iname 'vmlinuz-*' 2>/dev/null | sed 's|.*/vmlinuz-||' | sort || true)
-		[[ "${#allKernels[@]}" -eq 0 ]]  &&  { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): No kernels found in /boot\n" >&2 ; return 1; }
+		[[ "${#allKernels[@]}" -eq 0 ]]  &&  { error -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No kernels found in /boot\n" >&2 ; return 1; }
 		for nextKernel in "${allKernels[@]}"; do fBuild_UKI "${nextKernel}"; done
 	else
 		## Build one specific version
@@ -316,9 +316,9 @@ __fPopulateContentCheckArray(){
 	case "${doReqOrForb^^}" in
 		'R'*) doReqOrForb='R' ;;
 		'F'*) doReqOrForb='F' ;;
-		*)    doReqOrForb=''; echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): First arg must be 'R[EQUIRE]' or 'F[ORBID]'." >&2 ; return 1 ;;
+		*)    doReqOrForb=''; echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): First arg must be 'R[EQUIRE]' or 'F[ORBID]'." >&2 ; return 1 ;;
 	esac ; readonly doReqOrForb
-	[[ -z "${searchDir}" ]]    &&  { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Second arg must be a file path." >&2 ; return 1; }
+	[[ -z "${searchDir}" ]]    &&  { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Second arg must be a file path." >&2 ; return 1; }
 	searchDir="${searchDir%%/}/" ; readonly searchDir
 	## Append values to array
 	fRowField_ResetIdx
@@ -462,7 +462,7 @@ fBuild_UKI() {
 	local kernelCommandParms=""
 
 	## Validate
-	[[ ! -f "/boot/vmlinuz-${kernelVersion_t3afe}" ]]  &&  { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Calculated kernel filespec not found: '/boot/vmlinuz-${kernelVersion_t3afe}'." >&2 ; return 1; }
+	[[ ! -f "/boot/vmlinuz-${kernelVersion_t3afe}" ]]  &&  { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Calculated kernel filespec not found: '/boot/vmlinuz-${kernelVersion_t3afe}'." >&2 ; return 1; }
 
 	## Read kernel commandline source config file, strip out comments and empty lines, convert to space-delimited.
 	kernelCommandParms="$(grep -v '^\s*#' "${CMDLINE_SOURCEFILE}"  |  grep -v '^\s*$'  |  tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')"
@@ -505,14 +505,14 @@ fCheckModuleContents(){
 	local    outStr=""
 
 	## Validate
-	[[   -z "${modFile}" ]]            && { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): No UKI module file specified.\n"                                                  >&2 ; return 1; }
-	[[ ! -f "${modFile}" ]]            && { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): Specified UKI module file doesn't exist: '${modFile}'\n."                         >&2 ; return 1; }
-	[[ ${#requiredModules[@]} -le 0 ]] && { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): No populated module content array to check for in '${modFile}' via 'grep -P'.\n"  >&2 ; return 1; }
+	[[   -z "${modFile}" ]]            && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No UKI module file specified.\n"                                                  >&2 ; return 1; }
+	[[ ! -f "${modFile}" ]]            && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Specified UKI module file doesn't exist: '${modFile}'\n."                         >&2 ; return 1; }
+	[[ ${#requiredModules[@]} -le 0 ]] && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No populated module content array to check for in '${modFile}' via 'grep -P'.\n"  >&2 ; return 1; }
 
 	## Get list of modules
 	echo -e "\n[ Checking '${modFile}' for modules (0 is not good) ... ]\n"
 	allModList="$(lsinitrd "${modFile}" 2>/dev/null | grep -P ' root[ ]+root ')"
-	[[ -z "${allModList}" ]] && { echo -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): No modules were listed in '${modFile}'. Could be a bug in function?\n" >&2 ; return 1; }
+	[[ -z "${allModList}" ]] && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No modules were listed in '${modFile}'. Could be a bug in function?\n" >&2 ; return 1; }
 
 	## Checkexistence of required modules and build list
 	flaggedResults=0
@@ -553,8 +553,8 @@ fSign_EFIs() {
 	local -r SYSTEMD_BOOT_SRC="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
 
 	## Validate
-	[[ ! -f "${MOK_KEY}" ]]  && { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): MOK key not found: '${MOK_KEY}'.\n"   >&2 ; return 1; }
-	[[ ! -f "${MOK_CERT}" ]] && { error -e "\nERROR in ${mePath}.${FUNCNAME[0]}(): MOK cert not found: '${MOK_CERT}'.\n" >&2 ; return 1; }
+	[[ ! -f "${MOK_KEY}" ]]  && { error -e "\nERROR in ${meName}.${FUNCNAME[0]}(): MOK key not found: '${MOK_KEY}'.\n"   >&2 ; return 1; }
+	[[ ! -f "${MOK_CERT}" ]] && { error -e "\nERROR in ${meName}.${FUNCNAME[0]}(): MOK cert not found: '${MOK_CERT}'.\n" >&2 ; return 1; }
 
 	## Sign all UKIs
 	local -a ukiArr=()
