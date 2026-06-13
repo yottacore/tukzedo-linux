@@ -1,0 +1,100 @@
+#!/bin/sh
+# shellcheck disable=SC2046  ## 'Quote this to prevent word splitting.'
+# shellcheck disable=SC2116  ## 'Useless echo? Instead of cmd $(echo foo), just use cmd foo.'
+# shellcheck disable=SC2120  ## 'foo references arguments, but none are ever passed.'
+
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## Initialize and start log
+mePath_1mvp0kj="/etc/rc.localx9.d/040-empty-tmp"
+echo "[ ${mePath_1mvp0kj} ]"
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+
+fEmptyTmp(){
+	## Settings
+	startupLogFilename="x9startup-log.log"
+	startupLogDir="/tmp/var/log"
+
+	## Check to bail early
+	[ ! -d /tmp ] && return
+
+	## Get mountpoint info
+	mountPoint="$(/bin/mount | /bin/grep ' on /tmp ' 2>/dev/null | head -n 1 || true)"
+
+	## Empty before potential mount
+	__fEmptyTmp_DelContents
+
+	## Check if may need to mount /tmp, bail early if it was already mounted when we first checked.
+	[ -n "${mountPoint}" ] && return 0
+
+	## Attempt to mount '/tmp/', if defined in '/etc/fstab'.
+	/bin/mount /tmp 2>/dev/null || true
+	mountPoint="$(/bin/mount | /bin/grep ' on /tmp ' 2>/dev/null | head -n 1 || true)"
+
+	## Bail now if it's either not a mounted location at least if '/etc/fstab' (which is all we can affect here), or mounting failed.
+	[ -z "${mountPoint}" ] && return 0
+	__fEmptyTmp_DelContents " after mounting"
+
+	## Show mountpoint if exists.
+	[ -n "${mountPoint}" ] && { echo "[ ${mePath_1mvp0kj}.fEmptyTmp() - FYI: /tmp is mounted on: ]"; echo "    ${mountPoint}";}
+
+}
+
+__fEmptyTmp_DelContents(){
+
+	## Args
+	appendToOutputMessage="${1}"
+
+	## Show mountpoint (not strictly part of this function name's purpose but also common to this repeated code path).
+	[ -n "${mountPoint}" ] && { echo "[ ${mePath_1mvp0kj}.fEmptyTmp() - FYI: /tmp is mounted on: ]"; echo "    ${mountPoint}";}
+
+	## Get dir contents (except '/tmp/var/${startupLogFilename}')
+#	regex_ExcludePathsFromShow="$(awk -v p="${startupLogDir}/${startupLogFilename}" 'BEGIN {split(p,a,"/"); for(i=2;i<=length(a);i++) {s=""; for(j=2;j<=i;j++) s=s"/"a[j]; sub("//","/",s); print s}}' | paste -sd '|' -)"
+	regex_ExcludePathsFromShow="/tmp/var|${startupLogDir}|${startupLogDir}/${startupLogFilename}"
+	dirContents="$(/bin/find /tmp -mindepth 1 2>/dev/null | grep -Pv "^(${regex_ExcludePathsFromShow})\$" || true)"
+	[ -z "${dirContents}" ] && return 0
+
+	## Show contents
+	if [ "$(echo "${dirContents}" | /bin/wc -l)" -gt 10 ]; then
+		echo "[ ${mePath_1mvp0kj}.fEmptyTmp() - FYI: First and last contents of '/tmp'${appendToOutputMessage}: ]"
+		{ echo "${dirContents}" | /bin/head -n 5; echo '...'; echo "${dirContents}" | /bin/tail -n 5; } | /bin/ts '   '
+	else
+		echo "[ ${mePath_1mvp0kj}.fEmptyTmp() - FYI: Contents of '/tmp'${appendToOutputMessage}: ]"
+		echo "${dirContents}" | /bin/ts '   '
+	fi
+
+	## Temporarily move /tmp/var/${startupLogFilename} from /tmp/ to /var/tmp/
+	[ -f "/var/tmp/${startupLogFilename}" ]                              && /bin/rm                                           "/var/tmp/${startupLogFilename}"
+	[ -f "${startupLogDir}/${startupLogFilename}" ] && [ -d "/var/tmp" ] && /bin/mv "${startupLogDir}/${startupLogFilename}"  "/var/tmp/"
+	echo "[ ${mePath_1mvp0kj}.fEmptyTmp() - Emptying '/tmp/' ... ]"
+
+	## Try to delete all files under /tmp/
+	/bin/find /tmp -mindepth 1 -delete 2>/dev/null || true
+
+	## Move ${startupLogFilename} back under /tmp/
+	[ ! -d "${startupLogDir}" ] && /bin/mkdir -p "${startupLogDir}"
+	[   -f "/var/tmp/${startupLogFilename}" ] && /bin/mv "/var/tmp/${startupLogFilename}"  "${startupLogDir}/"
+}
+
+fEmptyTmp
+
+
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+"/usr/local/bin/x9/sh/x9startup-log"  "${mePath_1mvp0kj}"  comment "Ran."  2>/dev/null || true
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+
+##	Purpose:
+##		- Makes sure /tmp is empty.
+##	Notes:
+##		Remember to not 'exit' anything, anywhere, in the chain of rc.local processing.
+##	History:
+##		- 20260323 JC: Created.
+##		- 20260326 JC:
+##			- Fixed a non-breaking bug 'local mountPoint=...': 'local' is not sh-compatible. But that variable wasn't even used.
+##			- Show mountpoint if exists.
+##			- Bail early if no contents.
+##			- Added filename.functionname() to echo output.
+##			- Moved this to the bottom.
+##			- Attempt to mount /tmp if not already.
+##			- Move "/var/tmp/${startupLogFilename}" out of the way first, before deleting /tmp/*, then move back.
