@@ -45,6 +45,9 @@ declare -r TARGET_DIR="/usr/local/sbin"
 declare -a sourceFiles=()
 declare -a targetFiles=()
 
+sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_empty-tmp")
+targetFiles+=("${TARGET_DIR}/tkz_empty-tmp")
+
 sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_insure-efi-mount")
 targetFiles+=("${TARGET_DIR}/tkz_insure-efi-mount")
 
