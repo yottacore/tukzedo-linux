@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Improved `install_dev.bash`; gets list of files to install from API, rather than hard-coded.
+
 - Updated `tkz_rebuild-uki` to be more complete, ignore Grub by default, and check if `/boot/efi` is mounted before running.
 
 - Added (and bugfixed) `tkz_insure-efi-mount`, already existed in a different (non-github) project.

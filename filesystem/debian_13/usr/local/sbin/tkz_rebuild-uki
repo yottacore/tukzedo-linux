@@ -613,6 +613,37 @@ fSetBootKernelDefaultToLatestMinusOne() {
 }
 
 
+## Remove old files (e.g. logs)
+[[ -v __fRemoveOldFiles_default_maxLogfiles            ]]  ||  declare -gri __fRemoveOldFiles_default_maxLogfiles=10
+[[ -v __fRemoveOldFiles_default_delNullFilesGeNMinsOld ]]  ||  declare -gri __fRemoveOldFiles_default_delNullFilesGeNMinsOld=1
+fRemoveOldFiles(){
+	local -r basePath="${1:-}"                       ## Arg <REQUIRED>: Folder where logfiles go.
+	local -r wildcardFilespec="${2:-}"               ## Arg <REQUIRED>: A filename with at least one required embedded POSIX wildcard in the string (NOT at the shell expansion level). This is to old logs can be deleted.
+	local    keepNewestNlogs="${3:-}"                ## Arg [optional]: Number of newest log files to keep. Defaults to $default_keepNewestNlogs
+	local    removeNullsThisMinutesOrOlder="${4:-}"  ## Arg [optional]: Remove empty files this many minutes or older. 0 to disable.
+	## Arg4: Remove 0-byte matches older than N > 0 minutes old. (Default = 0 which means DISABLE this action.
+	local -ri default_keepNewestNlogs=10
+	local -ri default_removeNullsThisMinutesOrOlder=$((60*24))
+	local -r  safetyCheck_Arg1MustContain="[^a-z0-9](log|archive|old|bak|backup|delete|zip|7z|tar|gz|tgz|xz|bz2|zst)"
+	[[   -z "${basePath}" ]] && fThrowError  "The first argument to this function must be a valid folder to rotate logs in."  "${FUNCNAME[0]}"
+	[[ ! -d "${basePath}" ]] && fThrowError  "The first argument to this function (the folder to rotate logs in) doesn't seem to exist: '${basePath}'."  "${FUNCNAME[0]}"
+	[[ "/" == "$(realpath "${basePath}")" ]] && fThrowError  "For safety purposes, the first argument to this function (the folder to rotate logs in '${basePath}') cannot be the root directory."  "${FUNCNAME[0]}"
+	[[ -z "${wildcardFilespec}" ]] && fThrowError  "The second argument to this function must be a single file name, with at least one POSIX wildcard character embedded in the string (rather than shell expansion variables)."  "${FUNCNAME[0]}"
+	grep -Pq '[*?\[\]]' <<< "${wildcardFilespec}" || fThrowError  "The second argument to this function (log filespec '${wildcardFilespec}') must have at least one POSIX wildcard expression embedded in the string, e.g.: *, ?, []."  "${FUNCNAME[0]}"
+	local -r fullPathspec="$(realpath "${basePath}")/${wildcardFilespec}"
+	grep -iPq "${safetyCheck_Arg1MustContain}" <<< "${fullPathspec}" || fThrowError "For safety purposes, as a crude check against potential massive accidental deletion, the full path/file spec sent to this function must satisfy the following regex: '${safetyCheck_Arg1MustContain}', but doesn't: '${fullPathspec}'."  "${FUNCNAME[0]}"
+	[[ -n "${keepNewestNlogs}" ]] && [[ ! "${keepNewestNlogs}" =~ ^[0-9]$ ]] && fThrowError  "The third argument to this function ('keep newest N logs'), must be an integer, but got '${keepNewestNlogs}' instead."  "${FUNCNAME[0]}"
+	[[ -z "${keepNewestNlogs}" ]] && keepNewestNlogs=${default_keepNewestNlogs}
+	local -ir keepNewestNlogs=$keepNewestNlogs
+	[[ -n "${removeNullsThisMinutesOrOlder}" ]] && [[ ! "${removeNullsThisMinutesOrOlder}" =~ ^[0-9]$ ]] && fThrowError  "The fourth argument to this function ('remove null files N minutes or older'), must be an integer >=0, but got '${removeNullsThisMinutesOrOlder}' instead."  "${FUNCNAME[0]}"
+	[[ -z "${removeNullsThisMinutesOrOlder}" ]] && removeNullsThisMinutesOrOlder=$default_removeNullsThisMinutesOrOlder
+	local -ir removeNullsThisMinutesOrOlder=$removeNullsThisMinutesOrOlder
+	local useRemoveProgram="rm" ; [[ -z "$(which trash 2>/dev/null || true)" ]] && useRemoveProgram="trash"; local -r useRemoveProgram="${useRemoveProgram}"
+	find "${basePath}" -maxdepth 1 -type f -name "${wildcardFilespec}" -printf '%T@ %p\0' | sort -z -n | head -z -n "-${keepNewestNlogs}" | cut -z -d' ' -f2- | xargs -0 -r "${useRemoveProgram}"
+	((removeNullsThisMinutesOrOlder > 0)) && find "${basePath}" -maxdepth 1 -type f -name "${wildcardFilespec}" -empty -mmin +${removeNullsThisMinutesOrOlder} -delete
+:;}
+
+
 declare -i __fRowField_FieldIdx=0 #..............: 1-based index but pre-increment is 0.
 fRowField_ResetIdx(){ __fRowField_FieldIdx=0; }
 fRowField_AppendVal(){

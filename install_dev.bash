@@ -35,32 +35,21 @@ set -euo pipefail
 declare SUDO_CMD="" ; [[ "${UID}" == "0" ]] || SUDO_CMD="sudo" ; readonly SUDO_CMD
 
 ## Repo
-declare -r GITHUB_URL_PREFIX="https://raw.githubusercontent.com/t00mietum/tukzedo-linux/main/filesystem/debian_13/usr/local/sbin"
 declare -r FRIENDLY_NAME='Tukzedo Linux'
 declare -r TARGET_DIR="/usr/local/sbin"
+declare -r GITHUB_URL_DOWNLOAD_PREFIX="https://raw.githubusercontent.com/t00mietum/tukzedo-linux/main/filesystem/debian_13/usr/local/sbin"
+declare -r GITHUB_URL_API="https://api.github.com/repos/t00mietum/tukzedo-linux/contents/filesystem/debian_13/usr/local/sbin?ref=main"
 
-##
-## Define sources and targets
+## Query GitHub API for list of files to install
+echo "[ Querying GitHub for file list... ]"
+declare apiResponse=""
+apiResponse="$(curl -fsSL "${GITHUB_URL_API}")" || { echo -e "\nERROR: Failed to query GitHub API.\n"; exit 1; }
 
-declare -a sourceFiles=()
-declare -a targetFiles=()
-
-sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_empty-tmp")
-targetFiles+=("${TARGET_DIR}/tkz_empty-tmp")
-
-sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_insure-efi-mount")
-targetFiles+=("${TARGET_DIR}/tkz_insure-efi-mount")
-
-sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_rebuild-uki")
-targetFiles+=("${TARGET_DIR}/tkz_rebuild-uki")
-
-sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_zfs-crypthome_login")
-targetFiles+=("${TARGET_DIR}/tkz_zfs-crypthome_login")
-
-sourceFiles+=("${GITHUB_URL_PREFIX}/tkz_zfs-crypthome_logout-watchdog")
-targetFiles+=("${TARGET_DIR}/tkz_zfs-crypthome_logout-watchdog")
-
-readonly  sourceFiles  targetFiles
+## Populate array of file names to install
+declare -a fileNames=()
+while IFS= read -r nextItem; do fileNames+=("${nextItem}"); done < <(echo "${apiResponse}" | grep '"name"' | sed 's/.*"name": *"//;s/".*//' | grep '^tkz_')
+[[ ${#fileNames[@]} -gt 0 ]] || { echo -e "\nERROR: No tkz_* files found at GitHub URL.\n"; exit 1; }
+readonly fileNames
 
 ## Warn if existing files will be overwritten
 declare warnExisting=""
@@ -69,8 +58,10 @@ declare warnExisting=""
 ## Prompt user to continue
 userInput=""
 echo -e "\nGoing to install runtime scripts for ${FRIENDLY_NAME}:\n"
-echo "  - Source URL prefix ......: ${GITHUB_URL_PREFIX}/"
+echo "  - Source URL prefix ......: ${GITHUB_URL_DOWNLOAD_PREFIX}/"
+echo "  - API URL ................: ${GITHUB_URL_API}"
 echo "  - Install dir ............: ${TARGET_DIR}"
+echo "  - Files to install .......: ${fileNames[*]}"
 echo "  - Current \$USER ..........: ${USER}"
 [[ -n "${SUDO_CMD}" ]]  &&  echo "  - Need to prompt for sudo : Yes"
 [[ -z "${warnExisting}" ]]  ||  echo -e "\n${warnExisting}"
@@ -89,10 +80,10 @@ fi
 
 ## Download and install
 echo
-for i in "${!sourceFiles[@]}"; do
-	echo "[ Downloading: ${sourceFiles[$i]##*/} ... ]"
-	${SUDO_CMD} curl -fsSL -o "${targetFiles[$i]}" "${sourceFiles[$i]}"
-	${SUDO_CMD} chmod +x "${targetFiles[$i]}"
+for nextItem in "${fileNames[@]}"; do
+	echo "[ Downloading: ${nextItem} ... ]"
+	${SUDO_CMD} curl -fsSL -o "${TARGET_DIR}/${nextItem}"  "${GITHUB_URL_DOWNLOAD_PREFIX}/${nextItem}"
+	${SUDO_CMD} chmod +x "${TARGET_DIR}/${nextItem}"
 done
 
 ## Show installed files
@@ -107,3 +98,4 @@ echo -e "\n[ Done. ]\n"
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 ## History:
 ##		- 20260601 JC: Created.
+##		- 20260714 JC: Get list of files to install from GitHub API, instead of hardcoding in script. Warn if existing files will be overwritten. Prompt user to continue.
