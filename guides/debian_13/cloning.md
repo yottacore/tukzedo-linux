@@ -183,8 +183,8 @@ Systems installed directly onto basic filesystems like ext4 present few cloning 
 
 		~~~bash
 		cd $(mktemp -d)  &&  git clone --filter=blob:none --sparse https://github.com/t00mietum/tukzedo-linux
-		cd tukzedo  &&  git sparse-checkout init --no-cone  &&  git sparse-checkout set helpers
-		sudo cp helpers/*  /usr/local/sbin/
+		cd tukzedo  &&  git sparse-checkout init --no-cone  &&  git sparse-checkout set utility
+		sudo cp utility/*  /usr/local/sbin/
 		~~~
 
 		Alternately you can copy the helper scripts somewhere less permanent, and add that folder to your path.
