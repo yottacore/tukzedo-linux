@@ -9,7 +9,7 @@
 ##	Copyright and license ...: Toward bottom of this file.
 ##	History: At bottom of script. (Maintained separately from and/or in addition to, cloud-based version control.)
 
-##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Copyright © 2026 Bubbles (ID: XଌฅრX۳ᛟԃლፀƅꓩหδლც)
 ##	Licensed under The GNU General Public License v2.0 or later.
 ##		https://spdx.org/licenses/GPL-2.0-or-later.html
 ##	SPDX-License-Identifier: GPL-2.0-or-later
