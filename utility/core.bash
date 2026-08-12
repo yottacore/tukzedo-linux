@@ -372,7 +372,7 @@ else
 				[[ -d /boot ]] && [[ -n "$(which zip 2>/dev/null || true)" ]]  && sudo zip -j  /boot/boot_backup.zip  /boot/*  -x '*/*.zip' '*.zip'
 
 				## Build
-				/usr/sbin/rebuild-uki --all
+				/usr/local/sbin/tkz_rebuild-uki --all
 				fCheckImportantRelativeDates
 			}
 

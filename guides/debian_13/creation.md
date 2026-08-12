@@ -796,7 +796,7 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 			##		- Command-line for the dracut/UKI build process.
 			##		- These commands get passed to the kernel, so normally stuff that would go in Grub's GRUB_CMDLINE_LINUX and GRUB_CMDLINE_LINUX_DEFAULT lines.
 			##	Notes:
-			##		- The dracut/UKI build process can't handle blank lines or comment lines. But the custom /usr/local/sbin/rebuild-uki script strips them out.
+			##		- The dracut/UKI build process can't handle blank lines or comment lines. But the custom /usr/local/sbin/tkz_rebuild-uki script strips them out.
 			##	History:
 			##		- 20260310 tt: Created.
 
@@ -846,9 +846,9 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 	## Create the dracut rebuild script.
 	## Note: This HEREDOC preserves '$' without escaping; but therefore also can't handle actual creation-time variables.
 		## Currently at: /home/${USER}/mnt/encfs/encfs_daily/0_findhome/rebuild-uki
-			sudo cp /home/${USER}/mnt/encfs/encfs_daily/0_findhome/rebuild-uki /usr/local/sbin/rebuild-uki  &&  sudo chmod +x /usr/local/sbin/rebuild-uki  &&  sudo chown root:root /usr/local/sbin/rebuild-uki  &&  sudo nano /usr/local/sbin/rebuild-uki; sudo d /usr/local/sbin/rebuild-uki
+			sudo cp /home/${USER}/mnt/encfs/encfs_daily/0_findhome/rebuild-uki /usr/local/sbin/tkz_rebuild-uki  &&  sudo chmod +x /usr/local/sbin/tkz_rebuild-uki  &&  sudo chown root:root /usr/local/sbin/tkz_rebuild-uki  &&  sudo nano /usr/local/sbin/tkz_rebuild-uki; sudo d /usr/local/sbin/tkz_rebuild-uki
 		## Eventually do via cat+HEREDOC below:
-			filePath="/usr/local/sbin/rebuild-uki"  #; sudo nano "${filePath}"
+			filePath="/usr/local/sbin/tkz_rebuild-uki"  #; sudo nano "${filePath}"
 			sudo tee <<- 'EOF_1mv0mh1'
 				#!/bin/bash
 			EOF_1mv0mh1
@@ -857,21 +857,28 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 
 	## Create the dracut rebuild trigger script.
 	## Note: This HEREDOC preserves '$' without escaping; but therefore also can't handle actual creation-time variables.
-		filePath="/etc/kernel/postinst.d/99-rebuild-uki"  #; sudo nano "${filePath}"
+	## Note: The 'zz-' prefix is REQUIRED, and must not be changed to a numeric prefix like '99-'.
+	##       run-parts executes /etc/kernel/postinst.d/ in C-locale lexical order, in which digits sort BEFORE
+	##       letters. Debian's own hooks there are unnumbered names ('dkms', 'dracut', 'zz-systemd-boot'), so a
+	##       '99-' prefix would run this FIRST - before 'dkms' has built zfs.ko for the new kernel. dracut would
+	##       then fail with "Failed to find module 'zfs'", the non-zero exit would abort the linux-image postinst,
+	##       and 'dkms' would never run at all - leaving the kernel packages unconfigured on every upgrade.
+	##       'zz-' yields the correct order: dkms -> dracut -> zz-rebuild-uki -> zz-systemd-boot.
+		filePath="/etc/kernel/postinst.d/zz-rebuild-uki"  #; sudo nano "${filePath}"
 		sudo tee <<- 'EOF_1mv0px7'
 			#!/bin/bash
 
 			##	Purpose:
 			##		- Custom script to trigger the custom rebuild script.
 			##	Dependencies:
-			##		- /usr/local/sbin/rebuild-uki
+			##		- /usr/local/sbin/tkz_rebuild-uki
 			##			- /etc/kernel/uki-cmdline.conf
 			##	History:
 			##		- 20260310 tt: Created template.
 
 			set -euo pipefail
 			kernelVersion_1mv0v85="$1"
-			exec /usr/local/sbin/rebuild-uki "${kernelVersion_1mv0v85}"
+			exec /usr/local/sbin/tkz_rebuild-uki "${kernelVersion_1mv0v85}"
 
 		EOF_1mv0px7
 		sudo chmod 755 "${filePath}"
