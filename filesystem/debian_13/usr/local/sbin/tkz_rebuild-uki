@@ -583,14 +583,21 @@ fSign_EFIs() {
 fSetBootKernelDefaultToLatestMinusOne() {
 	# Find all existing UKIs, sort by version, pick second-newest (n-1)
 	# If only one exists, use that
+	#
+	# Sort by VERSION, never by mtime: fSign_EFIs() rewrites every UKI immediately before
+	# this runs, so all mtimes are identical to the second. `sort -rn` on equal numeric
+	# keys silently falls back to reverse *lexical* order of the whole line, which sorts
+	# '...90...' > '...73...' > '...101...' and picked the OLDEST kernel as the default.
+	# `sort -Vr` matches the order systemd-boot itself lists entries in (`bootctl list`),
+	# so index [1] here is always the second entry in the boot menu.
 
 	## Variables
 	local -a allUKIs=()
 	local -i ukiCount=0
 	local    default_UKI=""
 
-	## Find debian .EFIs in UKI dir.
-	readarray -t allUKIs < <(sudo find "${UKI_DIR}" -maxdepth 1 -iname 'debian-*.efi' -printf '%T@ %f\n'  2>/dev/null  |  sort -rn  |  awk '{print $2}' || true)
+	## Find debian .EFIs in UKI dir, newest version first.
+	readarray -t allUKIs < <(sudo find "${UKI_DIR}" -maxdepth 1 -iname "${UKI_NAME_WILDCARD}" -printf '%f\n'  2>/dev/null  |  sort -Vr || true)
 	ukiCount="${#allUKIs[@]}"
 
 	## Validate
@@ -605,9 +612,9 @@ fSetBootKernelDefaultToLatestMinusOne() {
 	echo "[ Setting default boot entry to: ${default_UKI} ... ]"
 	if ((! dryRun)); then
 		if grep -q '^default ' "${LOADER_CONF}"; then
-			sed -i "s|^default .*|default ${default_UKI}|" "${LOADER_CONF}"
+			sudo sed -i "s|^default .*|default ${default_UKI}|" "${LOADER_CONF}"
 		else
-			echo "default ${default_UKI}" >> "${LOADER_CONF}"
+			echo "default ${default_UKI}" | sudo tee -a "${LOADER_CONF}" >/dev/null
 		fi
 	fi
 }
@@ -711,3 +718,9 @@ echo
 ##		- 20260611 JC:
 ##			- Added early script dependency checks.
 ##			- Added `/boot` backup functionality, and retained backup pruning.
+##		- 20260812 JC:
+##			- fSetBootKernelDefaultToLatestMinusOne(): Sort UKIs by version (`sort -Vr`) instead of by
+##			  mtime. fSign_EFIs() rewrites every UKI just beforehand, so mtimes were all identical and
+##			  the numeric sort fell back to lexical order - which selected the OLDEST kernel as default.
+##			- fSetBootKernelDefaultToLatestMinusOne(): Use sudo when writing to loader.conf, like the
+##			  rest of the script does for privileged writes.
