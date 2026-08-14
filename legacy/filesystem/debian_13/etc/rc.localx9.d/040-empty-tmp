@@ -1,0 +1,7 @@
+#!/bin/sh
+## Think of this wrapper as a symlink, whose link target can be commented out without losing the contents.
+## Alternately you can remove the exe bit from this file to stop it from being called.
+## Since this file is sourced from its caller, the shebang is ignored; it's only for IDE hints.
+"/usr/local/bin/x9/sh/x9startup-log"  "/etc/rc.localx9.d/040-empty-tmp"  note  "Running '/usr/local/sbin/tkz_empty-tmp' ..."
+
+. "/usr/local/sbin/tkz_empty-tmp" ;:

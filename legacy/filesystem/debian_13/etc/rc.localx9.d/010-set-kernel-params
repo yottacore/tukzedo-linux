@@ -1,0 +1,173 @@
+#!/bin/sh
+
+##	History:
+##		- 20160204 JC: (Template) Changed from sh to bash, added sysctl tunable variables.
+##		- 20160724 JC: (Template) Streamlined.
+##		- 20170624 JC: Added set +e, to ignore errors
+##		- 20181001 JC:
+##			- Added comments to functions.
+##			- Added fForkDelayDo() [not yet tested on actual reboots].
+##		- 20241008 JC:
+##			- Significant cleanup.
+##			- Removed fForkDelayDo().
+##			- NVMe drives set to deadline scheduler.
+##			- Removed 'exit 0' command, which could lead to problems.
+##		- 20160204 JC: Changed back from bash to sh, which is what it executes under anyway, no matter the shebang.
+##			- And caught numerous bugs in the process. This has probably been failing all over the place for a long time.
+##			- Undid inconsistent Yoda-comparisons.
+##			- Quoted all numeric comparisons.
+##			- Since this is sh, added '_' to the beginning of both sides of comparisons, in case of unset variable.
+
+
+## 20160721 JC: Fix "No value for $TERM and no -T specified" errors in jc-background* scripts.
+if [ -z "${TERM}" ]; then export TERM=xterm; fi
+
+
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## Initialize and start log
+mePath_1mtc1gf="/etc/rc.localx9.d/010-set-kernel-params"
+echo "[ ${mePath_1mtc1gf} ]"
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+
+fMain() {
+
+	## Make sure disks are using the right scheduler
+	fSetDiskSchedulers
+
+	## System settings
+	fSetSysParam "/sys/module/zswap/parameters/max_pool_percent"          25  ## ZSwap % of RAM to use for compressed memory swapfile; default=20
+	fSetSysParam "/proc/sys/vm/swappiness"                                50  ## How swap-happy is kernel; default=60; higher=more swappy; lower=usually better perceived desktop performance
+	fSetSysParam "/proc/sys/vm/vfs_cache_pressure"                        50  ## Preference for inode/dentry cache to other caches; default=100; 50 is better for desktop performance
+	fSetSysParam "/proc/sys/net/ipv4/tcp_mtu_probing"                      1  ## Should set to 1 on modern systems; default=0
+	fSetSysParam "/proc/sys/vm/dirty_writeback_centisecs"                200  ## How often to wake up to write data; default=500 or every 5 seconds
+	fSetSysParam "/proc/sys/vm/dirty_expire_centisecs"                   400  ## The time to leave data in RAM cache; default=3000 or 30 seconds; can result in longer freezes.
+# 	fSetSysParam "/sys/module/hid_apple/parameters/fnmode"                 2  ## Enable Apple fn keys
+
+	## Turn wireless power management off, which can greatly improve performance
+#	iwconfig wlp7s0 power off  ## Check wireless adapter name with 'iwconfig'
+
+	## The permanent home for these, which has to get baked into initrd, is /etc/modprobe.d/zfs.conf.
+	## These ephemeral settings live under '/sys/module/zfs/parameters/'.
+	fSetZfsParam "zfs_arc_max"                 2147483648  ## Maximum ARC memory cache size. See advice table at bottom of script.
+	fSetZfsParam "zfs_prefetch_disable"                 1  ## Free up cache space for known read/write, rather than speculative. "Has some know performance problems but usually best to not disable."
+#	fSetZfsParam "zfs_top_maxinflight"                 64  ## Set maximum number of inflight IOs to a reasonable value; default=32; this number will vary for your environment.
+#	fSetZfsParam "zfs_resilver_delay"                   0  ## Number of ticks to delay resilver; default=?; default=2; set to zero for best resilver performance.
+#	fSetZfsParam "zfs_scrub_delay"                      0  ## Number of ticks to delay scrub; default=4; set to zero for best scrub performance.
+#	fSetZfsParam "zfs_resilver_min_time_ms"          6000  ## Resilver for x/1000 seconds per TXG; default=3000 (3 sec); raise for better resilver performance.
+#	fSetZfsParam "zfs_scan_min_time_ms"              4000  ## Min millisecs to scrub per txg; default=2000; increase for better scub/resilver performance??
+#	fSetZfsParam "zfs_vdev_scrub_max_active"            4  ## How many vdevs to scrub at once.
+#	fSetZfsParam "zfs_scan_idle"                        5  ## idle window in clock ticks; default=50; decrease for better scub/resilver performance??
+#	fSetZfsParam "zfs_free_min_time_ms"               100  ## Mininum millisecs to free per txg; default=1000; decrease for better scub/resilver performance??
+#	fSetZfsParam "zfs_no_scrub_prefetch"               0  ## Set to 1 to disable scrub prefetch; not clear what this does or helps.
+
+	## ZFS cache sizing advice table
+	##
+	##     GB    For    options zfs    %
+	##    RAM    ZFS    zfs_arc_max=   RAM
+	##    ---    ----   ------------   ---
+	##    0.5    0.25      268435456   50%
+	##    1      0.5       536870912   50%
+	##    2      1.0      1073741824   50%
+	##    3      1.5      1610612736   50%
+	##    4      2.0      2147483648   50%
+	##    6      2.0      2147483648   33%
+	##    8      2.0      2147483648   25%
+	##   16      4.0      4294967296   25%
+	##   24      6.0      6442450944   25%
+	##   32      8.0      8589934592   25%
+	##   48     12.0     12884901888   25%
+	##   64     16.0     17179869184   25%
+	##  128     32.0     34359738368   25%
+
+}
+
+
+fSetDiskSchedulers(){
+	isRotational=0
+	isNvme=0
+	diskID=""
+	for fullDiskID in /sys/block/*; do
+
+		diskID="$(echo "${fullDiskID}" | grep -iPo "[\-a-z0-9]+$")"  ## Get just the diskID without path
+		[   -z "${diskID}" ]                             && continue
+		[ ! -f "/sys/block/${diskID}/queue/rotational" ] && continue
+		[ ! -f "/sys/block/${diskID}/queue/scheduler" ]  && continue
+		isNvme=0
+		isRotational=0
+		[ -n "$(echo "${diskID}" | grep -iPo "nvme" 2>/dev/null || true)" ] && isNvme=1
+		[ "_0" = "_${isNvme}" ] && [ "_1" = "_$(cat "/sys/block/${diskID}/queue/rotational" 2>/dev/null || true)" ] && isRotational=1
+		fSetDiskScheduler  "${diskID}"  $isNvme  $isRotational
+
+	done
+}
+
+fSetDiskScheduler(){
+	## Note: "deadline" is better for SSDs, but USB HDDs are being reported as non-rotional (i.e. SSD), so just user bfq for everything thats not NVMe.
+	devID="$1"
+	isNvme=$2
+	isRotational=$3
+	dskScheduler=""
+	if [ "_${isNvme}" = "_1" ]; then
+		## NVMe; this is reliable. 'none' is usually the best option, or 'mq-deadline'.
+		dskScheduler="none"
+	elif [ "_${isRotational}" = "_1" ]; then
+		## Spinning HDD; This is reliable. 'deadline' (not 'mq-deadline'] or 'bfq' is best for HDDs.
+		dskScheduler="deadline"
+	else
+		## 'Not-rotational (i.e. could be SSD). But HDDs behind USB often report as 'non-rotational' also, so punt and set to cfq just in case.
+		## For true SATA SSDs, 'none' or 'mq-deadline' is usually best. For USB HDDs, 'deadline' or 'bfq' is usually best.
+		dskScheduler="bfq"
+	fi
+#	fSetSysParam "/sys/block/${devID}/queue/read_ahead_kb"  "1024"
+	fSetSysParam "/sys/block/${devID}/queue/scheduler"  "cfq"  1  ## Quietly set to old multipurpose cfq first, in case next attempt fails because kernel is too old.
+	fSetSysParam "/sys/block/${devID}/queue/scheduler"  "${dskScheduler}"
+}
+
+fSetZfsParam(){
+	## Args
+	vsZfsSetting="$1"
+	vsZfsValue="$2"
+	## Do
+	fSetSysParam "/sys/module/zfs/parameters/${vsZfsSetting}" "${vsZfsValue}"
+}
+
+fSetSysParam(){
+
+	##	Args
+	vsParam="$1" #......: [REQUIRED]: Parameter path "e.g. /sys/module/somepath/virtualfile"
+	vwNewValue="$2" #...: [optional]: Value
+	vwValueOld=""
+	vwValueIs=""
+
+	## Init
+	doQuietly=0 ; [ "_${doQuietly}" = "_1" ] && doQuietly=1
+
+	## Validate
+	if [ ! -f "${vsParam}" ]; then
+		[ "_${doQuietly}" = "_0" ] && echo "Kernel parameter virtual file doesn't exist: '${vsParam}'."
+		return
+	fi
+
+	## Get old value
+	vwValueOld="$(cat "${vsParam}")"
+
+	## Set new value
+	echo "${vwNewValue}" > "${vsParam}"
+
+	## Get new  value
+	vwValueIs="$(cat "${vsParam}")"
+
+	## Echo old and new
+	[ "_${doQuietly}" = "_0" ] && echo "Parameter: '${vsParam}'  Was: '${vwValueOld}'  Attempt: '${vwNewValue}'  Now: '${vwValueIs}'"
+
+}
+
+
+fMain
+
+
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+"/usr/local/bin/x9/sh/x9startup-log"  "${mePath_1mtc1gf}"  comment "Ran."  2>/dev/null || true
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+

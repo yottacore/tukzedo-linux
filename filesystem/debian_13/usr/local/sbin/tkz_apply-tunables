@@ -1,0 +1,564 @@
+#!/bin/bash
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+#  shellcheck disable=2120  ## 'References arguments, but none are ever passed.' Valid function argument overloading.
+
+##	Purpose:
+##		- Applies the kernel/system tunables declared in '/etc/tukzedo/tunables.conf', and can generate
+##		  the equivalent native drop-in files from that same declaration.
+##		- The point is a single source of truth. Before this, the ZFS module parameters existed in BOTH
+##		  a hand-edited '/etc/modprobe.d/zfs.conf' and an imperative boot script that re-set them at
+##		  runtime, while the sysctls existed only inside that script - so 'sysctl --system' did not
+##		  reproduce the system's own tuning.
+##	Syntax:
+##		tkz_apply-tunables  [options]
+##	Options:
+##		    --check ........: Report every tunable whose live value differs from the config, and exit
+##		                      non-zero if any do. Changes nothing. Safe to run unprivileged.
+##		    --dry-run ......: Say what would change, but change nothing.
+##		    --emit-native ..: (Re)generate the native drop-in files from the config. Existing generated
+##		                      files are overwritten; nothing else is touched.
+##		    --config <path> : Use a different config file. Default: '${configFile}'.
+##		-q, --quiet ........: Only report values that actually changed (and problems).
+##		-h, --help .........: This.
+##	Exit codes:
+##		0 = success (or, with '--check', no drift).
+##		1 = something could not be applied (or, with '--check', drift was found).
+##		2 = usage or config error.
+##	Notes:
+##		- Runs as root to apply; re-executes via sudo if needed. '--check' needs no privileges.
+##		- Every setting is applied idempotently and reported as was → now, so a boot log shows exactly
+##		  what this changed and what it left alone.
+##		- Where a native mechanism exists, '--emit-native' writes it, because the native mechanism
+##		  catches cases a boot-time script structurally cannot:
+##			sysctls .......: /etc/sysctl.d/60-tkz-tunables.conf      (so 'sysctl --system' agrees)
+##			module params .: /etc/modprobe.d/tkz-tunables.conf       (so early boot / initrd agrees)
+##			  ... plus ....: /etc/dracut.conf.d/60-tkz-tunables.conf (so a GENERIC initrd includes it -
+##			                 with 'hostonly=no', dracut omits /etc/modprobe.d entirely, which silently
+##			                 leaves initrd-loaded modules such as 'zfs' on their default parameters)
+##			block devices .: /etc/udev/rules.d/60-tkz-tunables.rules (so HOTPLUGGED disks agree)
+##		- Built-in (non-modular) kernel code such as 'zswap' cannot be configured by '/etc/modprobe.d'
+##		  at all. For those, '--emit-native' prints the kernel command line entry to add instead of
+##		  generating a file that would silently do nothing.
+##		- Normally invoked by 'tkz-apply-tunables.service' at boot:
+##			journalctl -b -u tkz-apply-tunables.service
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+
+
+set -euo pipefail
+
+declare -r meName="$(basename "${0}")"
+declare -r mePath="$(readlink -f "${0}")"
+declare -r startupLogger="/usr/local/sbin/tkz_startup-log"
+
+## Options
+declare    configFile="/etc/tukzedo/tunables.conf"
+declare -i isCheckOnly=0
+declare -i isDryRun=0
+declare -i isEmitNative=0
+declare -i isQuiet=0
+
+## Generated artifacts. Anything listed here is overwritten wholesale by '--emit-native'.
+declare -r generatedSysctlFile="/etc/sysctl.d/60-tkz-tunables.conf"
+declare -r generatedModprobeFile="/etc/modprobe.d/tkz-tunables.conf"
+declare -r generatedUdevFile="/etc/udev/rules.d/60-tkz-tunables.rules"
+declare -r generatedDracutFile="/etc/dracut.conf.d/60-tkz-tunables.conf"
+
+## Running tallies, reported in the summary.
+declare -i countChanged=0
+declare -i countAlready=0
+declare -i countFailed=0
+declare -i countDrifted=0
+
+
+function fLog(){
+	echo "[ ${meName}: $* ]"
+	[[ -x "${startupLogger}" ]]  &&  "${startupLogger}" "${mePath}" note "$*"  ||  true
+}
+
+function fLogQuiet(){ [[ "${isQuiet}" -eq 1 ]] || echo "[ ${meName}: $* ]"; }
+function fLogBegin(){ [[ -x "${startupLogger}" ]] && "${startupLogger}" "${mePath}" begin "$*" || true; }
+function fLogEnd(){   [[ -x "${startupLogger}" ]] && "${startupLogger}" "${mePath}" end   "$*" || true; }
+
+
+function fShowSyntax(){
+	echo
+	sed -n '/^##\tSyntax:/,/^##\tNotes:/p' "${0}" | sed '$d' | sed "s|^##\t\?||; s|^\t|  |; s|\${configFile}|/etc/tukzedo/tunables.conf|"
+	echo
+}
+
+
+function fThrowUsageError(){
+	echo >&2
+	echo "${meName}: $*" >&2
+	echo "Try '${meName} --help'." >&2
+	echo >&2
+	exit 2
+}
+
+
+function fParseArgs(){
+	while [[ "$#" -gt 0 ]]; do
+		case "${1,,}" in
+			"--check")         isCheckOnly=1;  shift ;;
+			"--dry-run")       isDryRun=1;     shift ;;
+			"--emit-native")   isEmitNative=1; shift ;;
+			"-q"|"--quiet")    isQuiet=1;      shift ;;
+			"--config")        [[ "$#" -ge 2 ]] || fThrowUsageError "'--config' needs a path."
+			                   configFile="$2"; shift 2 ;;
+			"-h"|"--help")     fShowSyntax; exit 0 ;;
+			*)                 fThrowUsageError "Unrecognized option: '$1'." ;;
+		esac
+	done
+	[[ -r "${configFile}" ]]  ||  fThrowUsageError "Config file not readable: '${configFile}'."
+}
+
+
+function fInsureRoot(){
+	[[ "${EUID}" -eq 0 ]]  &&  return 0
+	## Reading live values needs no privileges, so let the read-only modes run as anyone.
+	local nextArg=""
+	for nextArg in "$@"; do
+		case "${nextArg,,}" in
+			"-h"|"--help"|"--check"|"--dry-run")  return 0 ;;
+		esac
+	done
+	command -v sudo &>/dev/null  ||  { echo "${meName}: must run as root." >&2; exit 1; }
+	echo "[ ${meName}: not root; re-executing via sudo ... ]"
+	exec sudo -- "${mePath}" "$@"
+}
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+##	Config parsing. Deliberately tiny: '[section]' headers and 'key = value' lines,
+##	with '#'-to-end-of-line comments. No quoting rules, no escapes, no includes.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+function fReadSection(){
+	## Echoes the 'key<TAB>value' pairs of section $1 (matched case-insensitively), in file order.
+	local -r wantSection="${1,,}"
+	local    currentSection=""
+	local    nextLine=""
+	local    keyPart=""
+	local    valuePart=""
+
+	while IFS= read -r nextLine || [[ -n "${nextLine}" ]]; do
+		nextLine="${nextLine%%#*}"                       ## Strip comments.
+		nextLine="${nextLine#"${nextLine%%[![:space:]]*}"}"  ## Trim leading whitespace.
+		nextLine="${nextLine%"${nextLine##*[![:space:]]}"}"  ## Trim trailing whitespace.
+		[[ -z "${nextLine}" ]]  &&  continue
+
+		if [[ "${nextLine}" == "["*"]" ]]; then
+			currentSection="${nextLine#[}"
+			currentSection="${currentSection%]}"
+			currentSection="${currentSection,,}"
+			continue
+		fi
+
+		[[ "${currentSection}" != "${wantSection}" ]]  &&  continue
+		[[ "${nextLine}" != *"="* ]]                   &&  continue
+
+		keyPart="${nextLine%%=*}"
+		valuePart="${nextLine#*=}"
+		keyPart="${keyPart%"${keyPart##*[![:space:]]}"}"
+		valuePart="${valuePart#"${valuePart%%[![:space:]]*}"}"
+		valuePart="${valuePart%"${valuePart##*[![:space:]]}"}"
+		[[ -z "${keyPart}" ]]  &&  continue
+
+		printf '%s\t%s\n' "${keyPart}" "${valuePart}"
+	done < "${configFile}"
+}
+
+
+function fListModuleSections(){
+	## Echoes the module name from every '[module <name>]' header found.
+	local nextLine=""
+	while IFS= read -r nextLine || [[ -n "${nextLine}" ]]; do
+		nextLine="${nextLine%%#*}"
+		nextLine="${nextLine#"${nextLine%%[![:space:]]*}"}"
+		nextLine="${nextLine%"${nextLine##*[![:space:]]}"}"
+		[[ "${nextLine,,}" == "[module "*"]" ]]  ||  continue
+		nextLine="${nextLine#*[Mm][Oo][Dd][Uu][Ll][Ee] }"
+		printf '%s\n' "${nextLine%]}"
+	done < "${configFile}"
+}
+
+
+function fIsModuleBuiltIn(){
+	## A loadable module has '/sys/module/<name>/initstate'; built-in code does not. This matters because
+	## '/etc/modprobe.d' is only ever consulted by modprobe, so it cannot configure built-in code at all.
+	[[ -d "/sys/module/${1}" ]]  &&  [[ ! -e "/sys/module/${1}/initstate" ]]
+}
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+##	Applying.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+function fApplyToFile(){
+	## Sets the single-value pseudo-file $1 to $2, reporting was → now. $3 is a human label for logs.
+	local -r targetFile="$1"
+	local -r wantValue="$2"
+	local -r label="$3"
+
+	if [[ ! -f "${targetFile}" ]]; then
+		fLog "SKIPPED: ${label}: no such kernel file '${targetFile}'."
+		return 0
+	fi
+
+	local -r oldValue="$(cat "${targetFile}" 2>/dev/null || true)"
+
+	if [[ "${oldValue}" == "${wantValue}" ]]; then
+		countAlready=$((countAlready + 1))
+		fLogQuiet "${label} = '${wantValue}' (already)"
+		return 0
+	fi
+
+	if [[ "${isCheckOnly}" -eq 1 ]]; then
+		countDrifted=$((countDrifted + 1))
+		fLog "DRIFT: ${label}: is '${oldValue}', config says '${wantValue}'."
+		return 0
+	fi
+
+	if [[ "${isDryRun}" -eq 1 ]]; then
+		fLog "DRY RUN: would set ${label}: '${oldValue}' → '${wantValue}'."
+		return 0
+	fi
+
+	echo "${wantValue}" > "${targetFile}" 2>/dev/null  ||  true
+	local -r newValue="$(cat "${targetFile}" 2>/dev/null || true)"
+
+	if [[ "${newValue}" == "${wantValue}" ]]; then
+		countChanged=$((countChanged + 1))
+		fLog "${label}: '${oldValue}' → '${newValue}'"
+	else
+		countFailed=$((countFailed + 1))
+		fLog "FAILED: ${label}: wanted '${wantValue}', still '${newValue}'. (Kernel rejected it?)"
+	fi
+	return 0
+}
+
+
+function fApplySysctls(){
+	local nextKey="" nextValue=""
+	while IFS=$'\t' read -r nextKey nextValue; do
+		[[ -z "${nextKey}" ]]  &&  continue
+		## 'net.ipv4.tcp_mtu_probing' → '/proc/sys/net/ipv4/tcp_mtu_probing'
+		fApplyToFile "/proc/sys/${nextKey//.//}" "${nextValue}" "sysctl ${nextKey}"
+	done < <(fReadSection "sysctl")
+}
+
+
+function fApplyModuleParams(){
+	local nextModule="" nextKey="" nextValue=""
+	while IFS= read -r nextModule; do
+		[[ -z "${nextModule}" ]]  &&  continue
+		if [[ ! -d "/sys/module/${nextModule}" ]]; then
+			fLog "SKIPPED: module '${nextModule}' is not loaded; nothing to set at runtime."
+			continue
+		fi
+		while IFS=$'\t' read -r nextKey nextValue; do
+			[[ -z "${nextKey}" ]]  &&  continue
+			fApplyToFile "/sys/module/${nextModule}/parameters/${nextKey}" "${nextValue}" "${nextModule}.${nextKey}"
+		done < <(fReadSection "module ${nextModule}")
+	done < <(fListModuleSections)
+}
+
+
+function fGetSchedulerClassFor(){
+	## Echoes the config class ('nvme', 'rotational' or 'nonrotational') that block device $1 falls into.
+	local -r deviceName="$1"
+	[[ "${deviceName}" == nvme* ]]  &&  { echo "nvme"; return 0; }
+	[[ "$(cat "/sys/block/${deviceName}/queue/rotational" 2>/dev/null || echo 0)" == "1" ]]  \
+		&&  { echo "rotational"; return 0; }
+	echo "nonrotational"
+}
+
+
+function fGetConfiguredScheduler(){
+	## Echoes the scheduler configured for class $1 in the '[block]' section, or nothing.
+	local -r wantClass="${1,,}"
+	local nextKey="" nextValue="" lineClass=""
+	while IFS=$'\t' read -r nextKey nextValue; do
+		## '[block]' lines look like:  <class>  scheduler = <value>
+		lineClass="${nextKey%%[[:space:]]*}"
+		[[ "${lineClass,,}" != "${wantClass}" ]]  &&  continue
+		[[ "${nextKey,,}" != *"scheduler" ]]      &&  continue
+		echo "${nextValue}"
+		return 0
+	done < <(fReadSection "block")
+}
+
+
+function fApplyBlockSchedulers(){
+	local nextPath="" deviceName="" deviceClass="" wantScheduler="" availableList="" activeScheduler=""
+
+	for nextPath in /sys/block/*; do
+		deviceName="$(basename "${nextPath}")"
+		[[ -f "${nextPath}/queue/scheduler" ]]  ||  continue
+
+		deviceClass="$(fGetSchedulerClassFor "${deviceName}")"
+		wantScheduler="$(fGetConfiguredScheduler "${deviceClass}")"
+		[[ -z "${wantScheduler}" ]]  &&  { fLog "SKIPPED: ${deviceName}: no scheduler configured for class '${deviceClass}'."; continue; }
+
+		## '/sys/block/*/queue/scheduler' reads as a menu ('none [mq-deadline] bfq'), not a bare value,
+		## so it needs its own comparison rather than fApplyToFile's.
+		availableList="$(cat "${nextPath}/queue/scheduler" 2>/dev/null || true)"
+		activeScheduler="$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' <<< "${availableList}")"
+
+		if [[ "${activeScheduler}" == "${wantScheduler}" ]]; then
+			countAlready=$((countAlready + 1))
+			fLogQuiet "${deviceName} (${deviceClass}) scheduler = '${wantScheduler}' (already)"
+			continue
+		fi
+
+		## The wanted scheduler may live in a module that simply isn't loaded yet (bfq, kyber).
+		if [[ " ${availableList//[\[\]]/ } " != *" ${wantScheduler} "* ]]; then
+			if [[ "${isCheckOnly}" -eq 1 || "${isDryRun}" -eq 1 ]]; then
+				fLog "NOTE: ${deviceName}: scheduler '${wantScheduler}' not currently available; would try 'modprobe ${wantScheduler}'."
+			else
+				modprobe "${wantScheduler}" 2>/dev/null  ||  true
+				availableList="$(cat "${nextPath}/queue/scheduler" 2>/dev/null || true)"
+			fi
+			if [[ " ${availableList//[\[\]]/ } " != *" ${wantScheduler} "* ]]; then
+				countFailed=$((countFailed + 1))
+				fLog "FAILED: ${deviceName}: scheduler '${wantScheduler}' unavailable. Kernel offers: ${availableList}"
+				continue
+			fi
+		fi
+
+		if [[ "${isCheckOnly}" -eq 1 ]]; then
+			countDrifted=$((countDrifted + 1))
+			fLog "DRIFT: ${deviceName} (${deviceClass}) scheduler: is '${activeScheduler}', config says '${wantScheduler}'."
+			continue
+		fi
+		if [[ "${isDryRun}" -eq 1 ]]; then
+			fLog "DRY RUN: would set ${deviceName} (${deviceClass}) scheduler: '${activeScheduler}' → '${wantScheduler}'."
+			continue
+		fi
+
+		echo "${wantScheduler}" > "${nextPath}/queue/scheduler" 2>/dev/null  ||  true
+		activeScheduler="$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' < "${nextPath}/queue/scheduler")"
+		if [[ "${activeScheduler}" == "${wantScheduler}" ]]; then
+			countChanged=$((countChanged + 1))
+			fLog "${deviceName} (${deviceClass}) scheduler → '${activeScheduler}'"
+		else
+			countFailed=$((countFailed + 1))
+			fLog "FAILED: ${deviceName}: scheduler is '${activeScheduler}', wanted '${wantScheduler}'."
+		fi
+	done
+}
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+##	Generating the native drop-ins.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+function fGeneratedHeader(){
+	echo "##	GENERATED FILE - DO NOT EDIT."
+	echo "##	Written by '${meName}' from '${configFile}'."
+	echo "##	Any change made here is lost the next time '${meName} --emit-native' runs."
+	echo "##	Edit the config file instead, then re-run that command."
+	echo
+}
+
+
+function fWriteGenerated(){
+	## Writes stdin to file $1, unless this is a dry run.
+	local -r targetFile="$1"
+	if [[ "${isDryRun}" -eq 1 ]]; then
+		fLog "DRY RUN: would write '${targetFile}':"
+		sed 's/^/    | /'
+		return 0
+	fi
+	cat > "${targetFile}"
+	chmod 0644 "${targetFile}"
+	fLog "Wrote '${targetFile}'."
+}
+
+
+function fEmitNativeSysctl(){
+	## An empty section yields a header-only file, which is harmless and still documents where the
+	## values are supposed to come from - so there's no special case for "nothing configured".
+	local nextKey="" nextValue=""
+	{
+		fGeneratedHeader
+		while IFS=$'\t' read -r nextKey nextValue; do
+			[[ -z "${nextKey}" ]]  &&  continue
+			printf '%s = %s\n' "${nextKey}" "${nextValue}"
+		done < <(fReadSection "sysctl")
+	} | fWriteGenerated "${generatedSysctlFile}"
+}
+
+
+function fEmitNativeModprobe(){
+	local nextModule="" nextKey="" nextValue=""
+	local -a builtInNotes=()
+	{
+		fGeneratedHeader
+		while IFS= read -r nextModule; do
+			[[ -z "${nextModule}" ]]  &&  continue
+			if fIsModuleBuiltIn "${nextModule}"; then
+				## Emitting 'options <builtin> ...' would be silently ineffective, so say so instead.
+				echo "## '${nextModule}' is built into the kernel, so modprobe options do not apply to it."
+				echo "## Put these on the kernel command line instead (this distro: /etc/kernel/uki-cmdline.conf):"
+				while IFS=$'\t' read -r nextKey nextValue; do
+					[[ -z "${nextKey}" ]]  &&  continue
+					echo "##     ${nextModule}.${nextKey}=${nextValue}"
+					builtInNotes+=("${nextModule}.${nextKey}=${nextValue}")
+				done < <(fReadSection "module ${nextModule}")
+				echo
+				continue
+			fi
+			while IFS=$'\t' read -r nextKey nextValue; do
+				[[ -z "${nextKey}" ]]  &&  continue
+				printf 'options %s %s=%s\n' "${nextModule}" "${nextKey}" "${nextValue}"
+			done < <(fReadSection "module ${nextModule}")
+		done < <(fListModuleSections)
+	} | fWriteGenerated "${generatedModprobeFile}"
+
+	## Built-in parameters need a human decision about the kernel command line; make that impossible to miss.
+	while IFS= read -r nextModule; do
+		fIsModuleBuiltIn "${nextModule}"  ||  continue
+		while IFS=$'\t' read -r nextKey nextValue; do
+			[[ -z "${nextKey}" ]]  &&  continue
+			fLog "ACTION NEEDED: '${nextModule}' is built-in. Add to /etc/kernel/uki-cmdline.conf: ${nextModule}.${nextKey}=${nextValue}"
+		done < <(fReadSection "module ${nextModule}")
+	done < <(fListModuleSections)
+}
+
+
+function fEmitNativeUdev(){
+	local nvmeScheduler="$(fGetConfiguredScheduler nvme)"
+	local rotationalScheduler="$(fGetConfiguredScheduler rotational)"
+	local nonRotationalScheduler="$(fGetConfiguredScheduler nonrotational)"
+	{
+		fGeneratedHeader
+		echo "##	Applies the configured I/O scheduler to every whole disk, at add AND change events - so"
+		echo "##	drives plugged in after boot get the same treatment, which a boot-time loop can never do."
+		echo
+		[[ -n "${nvmeScheduler}" ]]  &&  \
+			echo "ACTION==\"add|change\", SUBSYSTEM==\"block\", ENV{DEVTYPE}==\"disk\", KERNEL==\"nvme*\", ATTR{queue/scheduler}=\"${nvmeScheduler}\""
+		[[ -n "${rotationalScheduler}" ]]  &&  \
+			echo "ACTION==\"add|change\", SUBSYSTEM==\"block\", ENV{DEVTYPE}==\"disk\", KERNEL!=\"nvme*\", ATTR{queue/rotational}==\"1\", ATTR{queue/scheduler}=\"${rotationalScheduler}\""
+		[[ -n "${nonRotationalScheduler}" ]]  &&  \
+			echo "ACTION==\"add|change\", SUBSYSTEM==\"block\", ENV{DEVTYPE}==\"disk\", KERNEL!=\"nvme*\", ATTR{queue/rotational}==\"0\", ATTR{queue/scheduler}=\"${nonRotationalScheduler}\""
+	} | fWriteGenerated "${generatedUdevFile}"
+}
+
+
+function fEmitNativeDracut(){
+	## A generic (hostonly=no) initrd does NOT pick up '/etc/modprobe.d/', so on such a system the module
+	## parameters would silently never reach the module that the initrd itself loads - which is exactly
+	## the case for ZFS on a ZFS root. 'install_items' is dracut's supported way to force a file in.
+	local -i haveLoadableModules=0
+	local nextModule=""
+	while IFS= read -r nextModule; do
+		[[ -z "${nextModule}" ]]  &&  continue
+		fIsModuleBuiltIn "${nextModule}"  ||  haveLoadableModules=1
+	done < <(fListModuleSections)
+
+	[[ "${haveLoadableModules}" -eq 0 ]]  &&  return 0
+	[[ -d "/etc/dracut.conf.d" ]]  ||  return 0
+
+	{
+		fGeneratedHeader
+		echo "##	Forces the generated modprobe options into the initrd. Without this, a generic"
+		echo "##	(hostonly=no) dracut build omits '/etc/modprobe.d/' entirely, and any module the initrd"
+		echo "##	loads itself - notably 'zfs' on a ZFS root - comes up with default parameters."
+		echo
+		echo "install_items+=' ${generatedModprobeFile} '"
+	} | fWriteGenerated "${generatedDracutFile}"
+}
+
+
+function fEmitNative(){
+	fLog "Generating native drop-ins from '${configFile}' ..."
+	fEmitNativeSysctl
+	fEmitNativeModprobe
+	fEmitNativeUdev
+	fEmitNativeDracut
+	if [[ "${isDryRun}" -eq 0 ]]; then
+		fLog "NOTE: module parameters reach EARLY boot only after an initrd rebuild ('tkz_rebuild-uki')."
+		fLog "NOTE: to apply the new udev rule without a reboot: udevadm control --reload && udevadm trigger --subsystem-match=block"
+	fi
+}
+
+
+function fReportConflictingModprobeFiles(){
+	## A second file setting the same module option is the exact duplication this tool exists to end.
+	local nextModule="" nextKey="" nextFile=""
+	while IFS= read -r nextModule; do
+		fIsModuleBuiltIn "${nextModule}"  &&  continue
+		while IFS=$'\t' read -r nextKey _; do
+			[[ -z "${nextKey}" ]]  &&  continue
+			while IFS= read -r nextFile; do
+				[[ "${nextFile}" == "${generatedModprobeFile}" ]]  &&  continue
+				fLog "NOTE: '${nextFile}' also sets '${nextModule} ${nextKey}'. Two sources of truth; consider removing it there."
+			done < <(grep -ril --include='*.conf' "^[[:space:]]*options[[:space:]]\+${nextModule}\b.*\b${nextKey}=" /etc/modprobe.d/ 2>/dev/null || true)
+		done < <(fReadSection "module ${nextModule}")
+	done < <(fListModuleSections)
+}
+
+
+function fMain(){
+	fParseArgs "$@"
+	fLogBegin
+
+	fLog "Config: '${configFile}'"
+
+	if [[ "${isEmitNative}" -eq 1 ]]; then
+		fEmitNative
+		fReportConflictingModprobeFiles
+		fLogEnd
+		return 0
+	fi
+
+	fApplySysctls
+	fApplyModuleParams
+	fApplyBlockSchedulers
+
+	local -i exitCode=0
+	if [[ "${isCheckOnly}" -eq 1 ]]; then
+		if [[ "${countDrifted}" -eq 0 && "${countFailed}" -eq 0 ]]; then
+			fLog "In sync: ${countAlready} tunable(s) already match the config."
+		else
+			fLog "DRIFT: ${countDrifted} tunable(s) differ from the config; ${countAlready} match; ${countFailed} unavailable."
+			exitCode=1
+		fi
+	else
+		fLog "Applied: ${countChanged} changed, ${countAlready} already correct, ${countFailed} failed."
+		[[ "${countFailed}" -gt 0 ]]  &&  exitCode=1
+	fi
+
+	fLogEnd
+	return "${exitCode}"
+}
+
+
+fInsureRoot "$@"
+fMain "$@"
+
+
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## History:
+##		- 20260813 JC: Created, replacing '/etc/rc.localx9.d/010-set-kernel-params' (retired to 'legacy/').
+##			- Values now live in a declarative config rather than being embedded in shell, so there is
+##			  one place to edit and 'sysctl --system' agrees with the system's actual tuning.
+##			- Ends the duplication where ZFS parameters were set both in '/etc/modprobe.d/zfs.conf' and
+##			  again at runtime by the boot script; '--emit-native' now generates that file's tkz half,
+##			  and conflicting definitions elsewhere are reported.
+##			- I/O schedulers are generated as a udev rule, so hotplugged disks are covered. The old
+##			  one-shot loop over '/sys/block/*' at boot could never see them.
+##			- Dropped the old "write 'cfq' first in case the kernel is too old" step, which threw an
+##			  I/O error into the boot log on every single boot of any modern kernel.
+##			- Recognizes built-in (non-modular) code such as 'zswap', for which '/etc/modprobe.d' is
+##			  silently useless, and reports the kernel command line entry to add instead.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

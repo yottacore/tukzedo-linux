@@ -1,0 +1,51 @@
+##	Purpose:
+##		- Verifies (and repairs, if necessary) that the EFI system partition is really mounted and
+##		  readable at '/boot/efi' once the local filesystems and ZFS mounts have all settled.
+##		- This is a SAFETY NET, not the primary mount mechanism. '/boot/efi' should be mounted by its
+##		  own generated 'boot-efi.mount' unit, from the '/etc/fstab' entry, which carries
+##		  'x-systemd.after=zfs-import.target' for correct ordering. This unit exists to catch the case
+##		  where that mount ends up shadowed by a later mount over '/boot' - see the script's header.
+##	Notes:
+##		- Replaces '/etc/rc.localx9.d/020-insure-efi-mount', which was sourced into the shared
+##		  '/etc/rc.local' shell. Ordering here is declared rather than approximated with a 'sleep'.
+##		- 'ConditionPathIsMountPoint=!/boot/efi' is deliberately NOT used: the whole point is to also
+##		  catch the case where something IS mounted there but reads as empty.
+##	History:
+##		- 20260813 JC: Created.
+
+[Unit]
+Description=Ensure the EFI system partition is mounted at /boot/efi
+Documentation=file:/usr/local/sbin/tkz_insure-efi-mount
+ConditionPathExists=/boot/efi
+
+## Run only once everything that could legitimately mount (or shadow) '/boot/efi' has had its turn.
+After=local-fs.target
+After=zfs-import.target
+After=zfs-mount.service
+After=boot-efi.mount
+Wants=boot-efi.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tkz_insure-efi-mount /boot/efi --wait 15
+
+## A failure here means '/boot/efi' needs a human; it must not block or fail the rest of the boot.
+SuccessExitStatus=0
+TimeoutStartSec=120
+
+## Modest hardening only. Anything that gives this service its own mount namespace (PrivateTmp,
+## ProtectSystem=strict, ReadOnlyPaths, ...) would make its mounts invisible to the rest of the
+## system, which would defeat the entire purpose of the unit.
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

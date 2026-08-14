@@ -1,0 +1,14 @@
+#!/bin/bash
+
+##	Purpose:
+##		- Custom script to trigger the custom rebuild script.
+##	Dependencies:
+##		- /usr/local/sbin/tkz_rebuild-uki
+##			- /etc/kernel/uki-cmdline.conf
+##	History:
+##		- 20260310 JC: Created template.
+
+set -euo pipefail
+kernelVersion_1mv0v85="$1"
+exec /usr/local/sbin/tkz_rebuild-uki "${kernelVersion_1mv0v85}"
+

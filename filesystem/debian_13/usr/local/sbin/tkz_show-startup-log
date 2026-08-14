@@ -1,0 +1,248 @@
+#!/bin/bash
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+
+##	Purpose:
+##		- Renders the structured startup records written by 'tkz_startup-log' as an indented tree, with
+##		  per-step timings - i.e. the human-readable view that the old plain-text startup log used to be,
+##		  except reconstructed on demand from the journal instead of maintained as a file on disk.
+##	Syntax:
+##		tkz_show-startup-log  [options]
+##	Options:
+##		-b, --boot <id> ....: Which boot to show. Accepts anything 'journalctl -b' does (0 = current,
+##		                      -1 = previous, or a boot ID). Default: the current boot.
+##		-a, --all ..........: All boots, oldest first.
+##		-f, --follow .......: Stream new records as they arrive.
+##		-c, --caller <re> ..: Only show records whose caller matches this extended regex.
+##		-m, --max-depth <n> : Fold away anything nested deeper than <n>. (0 = top level only.)
+##		-p, --phase <p> ....: Only show records of this phase: begin, end, or note.
+##		-n, --lines <n> ....: Show at most the last <n> records.
+##		    --since <when> .: Passed through to journalctl (e.g. '-2 hours', 'today').
+##		    --until <when> .: Passed through to journalctl.
+##		    --no-color .....: Never colorize (also implied when stdout is not a terminal).
+##		    --raw ..........: Dump the underlying journal records instead of rendering them.
+##		-h, --help .........: This.
+##	Notes:
+##		- Reads 'journalctl -o export', whose format is plain 'KEY=value' lines with blank-line record
+##		  separators. That deliberately avoids a JSON parser (and therefore any dependency on 'jq' or
+##		  python being installed on a machine that may still be mid-bring-up).
+##		- Indentation comes from the 'TKZ_DEPTH' field recorded at write time, so a filtered view keeps
+##		  each surviving record at its true depth rather than re-deriving a misleading one.
+##		- The two timing columns are: elapsed since the first shown record, and delta since the previous
+##		  shown record. Blocks closed with a matching 'end' additionally show their own duration.
+##		- Everything here is read-only. For the raw data, or to query it yourself:
+##			journalctl -b -t tkz_startup -o json-pretty
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+
+
+set -euo pipefail
+
+declare -r meName="$(basename "${0}")"
+declare -r meVersion="1.0.0"
+declare -r journalIdentifier="tkz_startup"
+
+## Options
+declare    optBoot="0"
+declare -i optAllBoots=0
+declare -i optFollow=0
+declare    optCallerRegex=""
+declare    optMaxDepth=""
+declare    optPhase=""
+declare    optLines=""
+declare    optSince=""
+declare    optUntil=""
+declare -i optRaw=0
+declare -i useColor=1
+
+
+function fShowSyntax(){
+	## Reproduce the option block from this file's own header, so the two can never drift apart.
+	echo
+	echo "${meName} version ${meVersion}"
+	echo
+	sed -n '/^##\tSyntax:/,/^##\tNotes:/p' "${0}" | sed '$d' | sed 's/^##\t\?//; s/^\t/  /'
+	echo
+}
+
+
+function fThrowError(){
+	echo >&2
+	echo "${meName}: $*" >&2
+	echo >&2
+	exit 1
+}
+
+
+function fParseArgs(){
+	while [[ "$#" -gt 0 ]]; do
+		case "${1,,}" in
+			"-b"|"--boot")       [[ "$#" -ge 2 ]] || fThrowError "'$1' needs a value."; optBoot="$2";        shift 2 ;;
+			"-a"|"--all")        optAllBoots=1;                                                              shift   ;;
+			"-f"|"--follow")     optFollow=1;                                                                shift   ;;
+			"-c"|"--caller")     [[ "$#" -ge 2 ]] || fThrowError "'$1' needs a value."; optCallerRegex="$2"; shift 2 ;;
+			"-m"|"--max-depth")  [[ "$#" -ge 2 ]] || fThrowError "'$1' needs a value."; optMaxDepth="$2";    shift 2 ;;
+			"-p"|"--phase")      [[ "$#" -ge 2 ]] || fThrowError "'$1' needs a value."; optPhase="${2,,}";   shift 2 ;;
+			"-n"|"--lines")      [[ "$#" -ge 2 ]] || fThrowError "'$1' needs a value."; optLines="$2";       shift 2 ;;
+			"--since")           [[ "$#" -ge 2 ]] || fThrowError "'$1' needs a value."; optSince="$2";       shift 2 ;;
+			"--until")           [[ "$#" -ge 2 ]] || fThrowError "'$1' needs a value."; optUntil="$2";       shift 2 ;;
+			"--no-color")        useColor=0;                                                                 shift   ;;
+			"--raw")             optRaw=1;                                                                   shift   ;;
+			"-h"|"--help")       fShowSyntax; exit 0 ;;
+			"-v"|"--version")    echo "${meName} version ${meVersion}"; exit 0 ;;
+			*)                   fThrowError "Unrecognized option: '$1'. Try '--help'." ;;
+		esac
+	done
+
+	[[ -n "${optMaxDepth}" && ! "${optMaxDepth}" =~ ^[0-9]+$ ]]  &&  fThrowError "'--max-depth' needs a whole number."
+	[[ -n "${optLines}"    && ! "${optLines}"    =~ ^[0-9]+$ ]]  &&  fThrowError "'--lines' needs a whole number."
+	[[ -n "${optPhase}"    && ! "${optPhase}"    =~ ^(begin|end|note)$ ]]  &&  fThrowError "'--phase' must be begin, end or note."
+
+	## Colorizing a redirected stream just litters it with escape codes.
+	[[ -t 1 ]]  ||  useColor=0
+}
+
+
+function fBuildJournalArgs(){
+	## Echoes the journalctl arguments, one per line, for the caller to read into an array.
+	echo "-t"
+	echo "${journalIdentifier}"
+	if [[ "${optAllBoots}" -eq 0 ]]; then
+		echo "-b"
+		echo "${optBoot}"
+	fi
+	[[ -n "${optLines}" ]]  &&  { echo "-n"; echo "${optLines}"; }
+	[[ -n "${optSince}" ]]  &&  { echo "--since"; echo "${optSince}"; }
+	[[ -n "${optUntil}" ]]  &&  { echo "--until"; echo "${optUntil}"; }
+	[[ "${optFollow}" -eq 1 ]]  &&  echo "-f"
+	return 0
+}
+
+
+function fRender(){
+	## Parses 'journalctl -o export' - blank-line-separated blocks of 'KEY=value' lines - and prints the
+	## indented tree. Kept in awk (not bash) so that following a live boot stays cheap.
+	awk -v useColor="${useColor}"           \
+	    -v callerRegex="${optCallerRegex}"  \
+	    -v maxDepth="${optMaxDepth}"        \
+	    -v wantPhase="${optPhase}"          \
+	'
+	function fReset(){ tsUsec=""; caller=""; phase=""; depth=""; message=""; elapsedMs=""; }
+
+	function fFormatDuration(ms,   secs){
+		if (ms == "" || ms < 0)  return ""
+		if (ms < 1000)           return sprintf("%dms", ms)
+		secs = ms / 1000.0
+		if (secs < 60)           return sprintf("%.2fs", secs)
+		return sprintf("%dm%04.1fs", int(secs/60), secs - (int(secs/60) * 60))
+	}
+
+	function fEmit(   indent, i, symbol, color, line, clockStr, sinceStartStr, deltaStr, durationStr){
+		if (caller == "")                                          return
+		if (wantPhase  != "" && phase != wantPhase)                return
+		if (callerRegex != "" && caller !~ callerRegex)             return
+		if (maxDepth   != "" && depth + 0 > maxDepth + 0)          return
+
+		if (firstTsUsec == "") firstTsUsec = tsUsec
+		if (prevTsUsec  == "") prevTsUsec  = tsUsec
+
+		clockStr      = strftime("%H:%M:%S", int(tsUsec / 1000000)) sprintf(".%03d", int((tsUsec % 1000000) / 1000))
+		sinceStartStr = fFormatDuration(int((tsUsec - firstTsUsec) / 1000))
+		deltaStr      = fFormatDuration(int((tsUsec - prevTsUsec)  / 1000))
+		prevTsUsec    = tsUsec
+
+		indent = ""
+		for (i = 0; i < depth + 0; i++) indent = indent "   "
+
+		if      (phase == "begin") { symbol = "▸"; color = "\033[1;36m" }
+		else if (phase == "end")   { symbol = "◃"; color = "\033[1;32m" }
+		else                       { symbol = "•"; color = "\033[0;37m" }
+		if (useColor == 0) color = ""
+
+		durationStr = (phase == "end" && elapsedMs != "") ? "  (" fFormatDuration(elapsedMs) ")" : ""
+
+		line = sprintf("%s  %8s  %8s  %s%s %s", clockStr, sinceStartStr, deltaStr, indent, symbol, caller)
+		if (message != "" && message != phase) line = line "  " message
+		line = line durationStr
+
+		if (useColor == 1) print color line "\033[0m"; else print line
+		fflush()
+	}
+
+	BEGIN { fReset(); firstTsUsec = ""; prevTsUsec = "" }
+
+	## A blank line terminates the current record.
+	/^$/ { fEmit(); fReset(); next }
+
+	{
+		eq = index($0, "=")
+		if (eq < 2) next                          ## Binary/continuation lines: not something we emit.
+		key = substr($0, 1,      eq - 1)
+		val = substr($0, eq + 1)
+		if      (key == "__REALTIME_TIMESTAMP") tsUsec    = val + 0
+		else if (key == "TKZ_CALLER")           caller    = val
+		else if (key == "TKZ_PHASE")            phase     = val
+		else if (key == "TKZ_DEPTH")            depth     = val
+		else if (key == "TKZ_ELAPSED_MS")       elapsedMs = val + 0
+		else if (key == "MESSAGE")              message   = val
+	}
+
+	END { fEmit() }
+	'
+}
+
+
+function fMain(){
+	fParseArgs "$@"
+
+	command -v journalctl &>/dev/null  ||  fThrowError "'journalctl' not found; this needs a systemd journal."
+
+	local -a journalArgs=()
+	while IFS= read -r nextArg; do journalArgs+=("${nextArg}"); done < <(fBuildJournalArgs)
+
+	if [[ "${optRaw}" -eq 1 ]]; then
+		journalctl "${journalArgs[@]}" -o json-pretty
+		return 0
+	fi
+
+	## '--output-fields' keeps the export stream small; the trusted '__' fields come along regardless.
+	local -r renderedOutput="$(journalctl "${journalArgs[@]}" -o export \
+		--output-fields=TKZ_CALLER,TKZ_PHASE,TKZ_DEPTH,TKZ_ELAPSED_MS,MESSAGE 2>/dev/null | fRender)"
+
+	if [[ -z "${renderedOutput}" ]]; then
+		echo
+		echo "[ ${meName}: no '${journalIdentifier}' records matched. ]"
+		echo "[ Nothing has logged via 'tkz_startup-log' yet for this boot, or the filters excluded everything. ]"
+		echo
+		return 0
+	fi
+
+	echo
+	printf '%-12s  %8s  %8s  %s\n' "CLOCK" "ELAPSED" "DELTA" "STEP"
+	echo "${renderedOutput}"
+	echo
+}
+
+
+## Follow mode has to stream, so it bypasses the buffered path above.
+if [[ " $* " == *" -f "*  ||  " $* " == *" --follow "* ]]; then
+	fParseArgs "$@"
+	declare -a followArgs=()
+	while IFS= read -r nextArg; do followArgs+=("${nextArg}"); done < <(fBuildJournalArgs)
+	journalctl "${followArgs[@]}" -o export \
+		--output-fields=TKZ_CALLER,TKZ_PHASE,TKZ_DEPTH,TKZ_ELAPSED_MS,MESSAGE | fRender
+else
+	fMain "$@"
+fi
+
+
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## History:
+##		- 20260813 JC: Created, as the reader half of 'tkz_startup-log'.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

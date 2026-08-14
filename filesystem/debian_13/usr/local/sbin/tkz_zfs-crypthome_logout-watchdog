@@ -1,17 +1,33 @@
 #!/bin/bash
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
 
 ##	Purpose:
-##		- After forking and waiting a few seconds, unmounts all ZFS datasets belonging to users that:
-##			- Are logged out, and
-##			- Have ZFS encrypted home folders, and
-##			- Haven't yet been unmounted.
-##	Notes:
-##		- This doesn't seem to run too reliably as a systemd service, or lightdm script.
-##		  Which isn't this script's fault, but probably more about how this author has tried to set up the service or lightdm script.
-##		  But is robust enough to run from cron, eg /etc/cron.hourly/ - and not mess with logged-in users.
+##		- Cron-driven watchdog, the logout-side counterpart of 'tkz_zfs-crypthome_login':
+##		  For every user who has an encrypted ZFS home (marked by the '<custProp_UserName>' ZFS property),
+##		  if that user is fully logged out but their datasets are still mounted (or their key still loaded):
+##			1. Terminate whatever session remnants/processes still hold files open under their home.
+##			2. Unmount their entire dataset tree, escalating gently: systemd mount units (parent first -
+##			   see fTryUnmountViaSystemd() for why that order) → plain unmount (children first) →
+##			   recursive 'umount -R' (clears foreign mounts nested in the tree - see
+##			   fTryUmountRecursive()) → SIGTERM + retry → SIGKILL + forced unmount → lazy unmount
+##			   as a last resort.
+##			3. Unload the ZFS encryption key, so the data is actually at rest.
 ##	Instructions:
-##		- Add this to crontab -e to run every hour, e.g.:
-##			0 * * * * /usr/local/sbin/tkz_zfs-crypthome_logout-watchdog
+##		- Deploy the companion cron file (in this repo at 'filesystem/debian_13/etc/cron.d/') to:
+##			/etc/cron.d/tkz_zfs-crypthome-logout-watchdog
+##		  which runs this hourly as root. (No 'crontab -e' needed; do NOT add a dot to that filename -
+##		  cron ignores /etc/cron.d files whose names contain dots.)
+##		- Manual run (auto-elevates via sudo): tkz_zfs-crypthome_logout-watchdog [--dry-run]
+##	Notes:
+##		- Single-instance: holds an flock on a /dev/shm lock file. A second invocation exits immediately.
+##		  Locks self-clear when the holder dies (flock semantics), and /dev/shm is wiped on reboot, so a
+##		  stale lock can never wedge this permanently.
+##		- Logged-in detection uses 'loginctl' (systemd-logind), NOT 'who'/'users': utmp misses GUI sessions
+##		  on this setup, which is one of the ways the previous version misbehaved.
+##		- Users with linger enabled ('loginctl enable-linger') are treated as "in use" and skipped, since
+##		  linger is an explicit request to keep that user's services running while logged out.
+##		- Everything is logged to '${logFile}' (see below), plus summaries to syslog:
+##			journalctl -t tkz_zfs-crypthome_logout-watchdog
 ##	Copyright and license ...: Toward bottom of this file.
 ##	History .................: At bottom of this file.
 
@@ -21,233 +37,387 @@
 ##	SPDX-License-Identifier: GPL-2.0-or-later
 
 
-set -e
+set -euo pipefail
+
+declare -r meName="$(basename "${0}")"
+declare -r lockFile="/dev/shm/${meName}.lock"
+declare -r logFile="/var/log/${meName}.log"
+declare -ri logRotateAtBytes=524288  ## Rotate to .1 at ~512KB; two files max, so logs can never grow unbounded.
+
+## User-defined ZFS property that marks a dataset as some user's encrypted home:
+declare -r custProp_UserName="x9.custom.automount:user"
+declare -r custProp_Mountpoint="x9.custom.automount:dir"  ## Only consulted when 'mountpoint' is 'legacy'.
+
+
+function fLog(){
+	echo -e "$*"
+}
+
+function fSyslog(){
+	## For the handful of messages that should be findable via journalctl, not just the log file.
+	command -v logger &>/dev/null  &&  logger -t "${meName}" -- "$*" || true
+}
+
+
+function fGetZfsProp(){
+	## Echoes the value of ZFS property $2 for dataset $1, or nothing on error.
+	zfs get -H -o value "${2}" "${1}" 2>/dev/null || true
+}
+
+
+function fGetMountpointFor(){
+	## Echoes the effective mountpoint for dataset $1; 'mountpoint' property, with fallbacks for 'legacy'.
+	local -r zfsDataset="$1"
+	local mountLocation="$(fGetZfsProp "${zfsDataset}" mountpoint)"
+	if [[ "${mountLocation,,}" == "legacy" ]]; then
+		mountLocation="$(fGetZfsProp "${zfsDataset}" "${custProp_Mountpoint}")"
+		[[ -z "${mountLocation}" ]]  &&  mountLocation="$(findmnt -n -o TARGET --source "${zfsDataset}" 2>/dev/null | head -n 1 || true)"
+	fi
+	case "${mountLocation}" in
+		"-"|"none") mountLocation="" ;;
+	esac
+	echo "${mountLocation}"
+}
+
+
+function fIsUserInUse(){
+	## Returns 0 (in use - do not touch) if the user has any live logind presence, else 1.
+	local -r userName="$1"
+	local -r state="$(loginctl show-user "${userName}" --property=State --value 2>/dev/null || true)"
+	case "${state}" in
+		"active"|"online"|"opening")
+			fLog "•  loginctl reports user '${userName}' State=${state}."
+			return 0
+		;;
+		"lingering")
+			fLog "•  User '${userName}' has linger enabled (State=lingering); leaving their services alone."
+			return 0
+		;;
+	esac
+	## Belt-and-braces; utmp can't see GUI sessions here, but if it DOES claim a login, believe it.
+	if who | awk '{print $1}' | grep -qx "${userName}" 2>/dev/null; then
+		fLog "•  'who' reports user '${userName}' as logged in."
+		return 0
+	fi
+	return 1
+}
+
+
+function fListMountedInTree(){
+	## Echoes the mounted datasets in the tree rooted at $1, DEEPEST FIRST (safe direct-unmount order).
+	local -r rootDataset="$1"
+	zfs list -r -H -t filesystem -o name,mounted "${rootDataset}" 2>/dev/null | awk -F'\t' '$2=="yes" {print $1}' | tac || true
+}
+
+
+function fTryUnmountViaSystemd(){
+	## Preferred first unmount rung: ask systemd (PID 1) to stop each mount unit, PARENT FIRST,
+	## repeating passes as long as each pass unmounts something. Counter-intuitive but field-proven
+	## on this setup: iterating general → specific is the order that works, where classic
+	## deepest-first umount escalation tends to wedge. Empirically (verified 2026-08-12 on this
+	## exact systemd), 'systemctl stop' on a parent .mount does NOT cascade to its transient child
+	## mounts - the parent's stop just fails 'target is busy' while children remain - BUT every pass
+	## reliably peels off the deepest still-mounted layer, so a few passes unwind the whole subtree.
+	## A "Job failed" line per still-covered parent per pass is therefore normal, not an error.
+	local -r rootDataset="$1"
+	local -i beforeCount=0  afterCount=0
+	local nextDataset=""  nextMountLocation=""  mountUnit=""
+	while :; do
+		beforeCount="$(fListMountedInTree "${rootDataset}" | grep -c . || true)"
+		[[ "${beforeCount}" -eq 0 ]]  &&  return 0
+		## Parent-first == the natural hierarchy order of 'zfs list -r' (no 'tac').
+		while read -r nextDataset; do
+			[[ -z "${nextDataset}" ]]  &&  continue
+			nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
+			[[ -z "${nextMountLocation}" ]]  &&  continue
+			mountUnit="$(systemd-escape -p --suffix=mount "${nextMountLocation}" 2>/dev/null || true)"
+			[[ -z "${mountUnit}" ]]  &&  continue
+			fLog "•  Executing: systemctl stop '${mountUnit}'"
+			systemctl stop "${mountUnit}" 2>&1  ||  true
+		done < <(zfs list -r -H -t filesystem -o name,mounted "${rootDataset}" 2>/dev/null | awk -F'\t' '$2=="yes" {print $1}' || true)
+		afterCount="$(fListMountedInTree "${rootDataset}" | grep -c . || true)"
+		## No progress this pass (something is genuinely holding files) → let the next rung escalate.
+		[[ "${afterCount}" -ge "${beforeCount}" ]]  &&  return 0
+	done
+}
+
+
+function fTryUnmountAll(){
+	## One unmount pass over whatever is still mounted under $1, deepest first. $2: "" or "-f".
+	local -r rootDataset="$1"
+	local -r forceFlag="${2:-}"
+	local nextDataset=""
+	while read -r nextDataset; do
+		[[ -z "${nextDataset}" ]]  &&  continue
+		if [[ -n "${forceFlag}" ]]; then
+			fLog "•  Executing: zfs unmount -f '${nextDataset}'"
+			zfs unmount -f "${nextDataset}" 2>&1  ||  true
+		else
+			fLog "•  Executing: zfs unmount '${nextDataset}'"
+			zfs unmount "${nextDataset}" 2>&1  ||  true
+		fi
+	done < <(fListMountedInTree "${rootDataset}")
+}
+
+
+function fTryUmountRecursive(){
+	## One pass of util-linux 'umount -R' (then '-f -R') over still-mounted MOUNTPOINTS, deepest
+	## first. This is the only rung that can clear a FOREIGN mount (bind, FUSE, AppImage, etc.)
+	## nested inside the tree: such a mount makes its parent dataset EBUSY with no process holding
+	## anything, so neither 'zfs unmount' (ZFS-only) nor process-killing can ever fix it.
+	## ('-f' is nearly a no-op for local filesystems, but costs nothing once plain '-R' has failed.)
+	local -r rootDataset="$1"
+	local nextDataset=""  nextMountLocation=""
+	while read -r nextDataset; do
+		[[ -z "${nextDataset}" ]]  &&  continue
+		nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
+		[[ -z "${nextMountLocation}" ]]  &&  continue
+		mountpoint -q "${nextMountLocation}" 2>/dev/null  ||  continue
+		fLog "•  Executing: umount -R '${nextMountLocation}'"
+		umount -R "${nextMountLocation}" 2>&1  ||  true
+		if mountpoint -q "${nextMountLocation}" 2>/dev/null; then
+			fLog "•  Executing: umount -f -R '${nextMountLocation}'"
+			umount -f -R "${nextMountLocation}" 2>&1  ||  true
+		fi
+	done < <(fListMountedInTree "${rootDataset}")
+}
+
+
+function fProcessUser(){
+	## Evaluates one user+dataset pair, and if the user is logged out, unmounts and locks their home.
+	## Returns non-zero only on actual failure to unmount/lock.
+	local -r userName="$1"
+	local -r rootDataset="$2"
+
+	fLog "\n\n[ Checking user '${userName}', ZFS dataset '${rootDataset}' ... ]"
+	fLog "-------------------------------------------------------------------------------"
+
+	if ! getent passwd "${userName}" &>/dev/null; then
+		fLog "⚠️  FYI: '${custProp_UserName}=${userName}' on '${rootDataset}', but no such user account exists. Skipping."
+		return 0
+	fi
+
+	## Never pull the rug out from under whoever is running this.
+	local -r invokerName="${SUDO_USER:-$(logname 2>/dev/null || true)}"
+	if [[ -n "${invokerName}" && "${userName}" == "${invokerName}" ]]; then
+		fLog "•  User '${userName}' is the one running this script. Skipping on principle."
+		return 0
+	fi
+
+	if fIsUserInUse "${userName}"; then
+		fLog "✔️ User '${userName}' is logged in (or lingering); leaving everything alone."
+		return 0
+	fi
+	fLog "✔️ User '${userName}' is logged out."
+
+	## What is there to do?
+	local -a mountedDatasets=()
+	readarray -t mountedDatasets < <(fListMountedInTree "${rootDataset}")
+	local encryptionRoot="$(fGetZfsProp "${rootDataset}" encryptionroot)"
+	[[ "${encryptionRoot}" == "-" ]]  &&  encryptionRoot=""
+	local keyStatus=""
+	[[ -n "${encryptionRoot}" ]]  &&  keyStatus="$(fGetZfsProp "${encryptionRoot}" keystatus)"
+
+	if [[ "${#mountedDatasets[@]}" -eq 0 && "${keyStatus}" != "available" ]]; then
+		fLog "✔️ Nothing to do: no datasets mounted under '${rootDataset}', and key is not loaded."
+		return 0
+	fi
+	fLog "•  Mounted datasets (${#mountedDatasets[@]}): ${mountedDatasets[*]:-none}"
+	[[ -n "${encryptionRoot}" ]]  &&  fLog "•  Key status of '${encryptionRoot}': ${keyStatus}"
+
+	if ((isDryRun)); then
+		fLog "🔎 DRY RUN: would terminate '${userName}'s leftover processes, unmount the above, and unload the key."
+		return 0
+	fi
+
+	## Clean up logind session remnants first; this alone often releases everything.
+	fLog "•  Executing: loginctl terminate-user '${userName}'"
+	loginctl terminate-user "${userName}" 2>/dev/null  ||  true
+	sleep 1
+
+	## Escalation ladder. After each rung, stop as soon as nothing in the tree is still mounted.
+	## Rung 1: systemd mount units, parent first (see fTryUnmountViaSystemd for why that order).
+	fTryUnmountViaSystemd "${rootDataset}"
+
+	local nextMountLocation=""
+	local nextDataset=""
+	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]]; then
+		fLog "•  Still mounted after systemd pass; trying direct 'zfs unmount', deepest first ..."
+		fTryUnmountAll "${rootDataset}"
+	fi
+
+	## Last non-destructive rung before touching processes; see fTryUmountRecursive() for why.
+	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]]; then
+		fLog "•  Still mounted; trying recursive 'umount -R' on the mountpoints, deepest first ..."
+		fTryUmountRecursive "${rootDataset}"
+	fi
+
+	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]]; then
+		fLog "•  Still mounted; sending SIGTERM to '${userName}'s processes and to holders of these filesystems ..."
+		pkill -15 -u "${userName}" 2>/dev/null  ||  true
+		while read -r nextDataset; do
+			[[ -z "${nextDataset}" ]]  &&  continue
+			nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
+			[[ -z "${nextMountLocation}" ]]  &&  continue
+			fLog "•  Executing: fuser -k -15 -M -m '${nextMountLocation}'"
+			fuser -k -15 -M -m "${nextMountLocation}" 2>&1  ||  true
+		done < <(fListMountedInTree "${rootDataset}")
+		sleep 3
+		fTryUnmountAll "${rootDataset}"
+	fi
+
+	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]]; then
+		fLog "•  STILL mounted; sending SIGKILL and force-unmounting ..."
+		pkill -9 -u "${userName}" 2>/dev/null  ||  true
+		while read -r nextDataset; do
+			[[ -z "${nextDataset}" ]]  &&  continue
+			nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
+			[[ -z "${nextMountLocation}" ]]  &&  continue
+			fLog "•  Executing: fuser -k -9 -M -m '${nextMountLocation}'"
+			fuser -k -9 -M -m "${nextMountLocation}" 2>&1  ||  true
+		done < <(fListMountedInTree "${rootDataset}")
+		sleep 2
+		fTryUnmountAll "${rootDataset}" "-f"
+	fi
+
+	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]]; then
+		fLog "•  STILL mounted after force; lazy-unmounting as a last resort (holders keep zombie handles until they exit) ..."
+		while read -r nextDataset; do
+			[[ -z "${nextDataset}" ]]  &&  continue
+			nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
+			[[ -z "${nextMountLocation}" ]]  &&  continue
+			fLog "•  Executing: umount --lazy '${nextMountLocation}'"
+			umount --lazy "${nextMountLocation}" 2>&1  ||  true
+		done < <(fListMountedInTree "${rootDataset}")
+		sleep 1
+	fi
+
+	## Verdict on unmounting.
+	local -a stillMounted=()
+	readarray -t stillMounted < <(fListMountedInTree "${rootDataset}")
+	if [[ "${#stillMounted[@]}" -gt 0 ]]; then
+		fLog "❌ FAILURE: still mounted for logged-out user '${userName}': ${stillMounted[*]}"
+		fSyslog "FAILURE: could not unmount for logged-out user '${userName}': ${stillMounted[*]}"
+		return 1
+	fi
+	fLog "✔️ All of '${userName}'s datasets are unmounted."
+
+	## Unload the key so the data is actually locked.
+	if [[ -n "${encryptionRoot}" && "$(fGetZfsProp "${encryptionRoot}" keystatus)" == "available" ]]; then
+		fLog "•  Executing: zfs unload-key '${encryptionRoot}'"
+		zfs unload-key "${encryptionRoot}" 2>&1  ||  true
+		if [[ "$(fGetZfsProp "${encryptionRoot}" keystatus)" != "unavailable" ]]; then
+			fLog "❌ FAILURE: key for '${encryptionRoot}' is still loaded after 'zfs unload-key'."
+			fSyslog "FAILURE: key for '${encryptionRoot}' (user '${userName}') is still loaded after unmount."
+			return 1
+		fi
+		fLog "✔️ Key for '${encryptionRoot}' is unloaded."
+	fi
+
+	fLog "✔️ SUCCESS: '${userName}'s encrypted home is unmounted and locked."
+	fSyslog "SUCCESS: unmounted and locked '${userName}'s encrypted home ('${rootDataset}')."
+	return 0
+}
+
 
 function fMain(){
 
-	## Since this may be running from cron or as a service, temporarily append basic paths just in case none are set.
-	export PATH="${PATH}/usr/lib/lightdm/lightdm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	## Since this runs from cron, append basic paths in case none are set.
+	export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	cd /  ## So this process itself can never be a mountpoint holder.
 
-	## User-defined property to query:
-	local -r custProp_Mountpoint="x9.custom.automount:dir"
-
-	## Variables
-	local -i lastExitCode=0
-	local	userName=""
-	local	mountPoint=""
-	local	loggedInUserList=""
-	local -i isLegacy=0
-
-	echo "$0"
-	echo "Started $(date "+%Y%m%d-%H%M%S")"
-
-	## Get list of 'rpool/(USERDATA|homez)/*' ZFS datasets mounted at '/home/*'
-	local -r zfsHomeDatasets="$(mount | grep -iP " /home/.+" | grep -iP "^rpool/(USERDATA|homez)/.+" | awk '{ print $1 }' || true)"
-	if [[ -z "${zfsHomeDatasets}" ]]; then
-		echo "❌ Error: There appears to be no 'rpool/(USERDATA|homez)/*' ZFS datasets mounted at '/home/*'."
-		exit
-	fi
-
-	## Get list of logged in users
-	loggedInUserList="$(users)"
-	loggedInUserList="$(echo -e "${loggedInUserList//" "/"\n"}" | sort -u)"
-
-	## Loop through datasets
-	for zDataSet in ${zfsHomeDatasets}; do
-
-		echo -e "\n\n[ Checking /home ZFS dataset '${zDataSet}' ... ]"
-		echo "-------------------------------------------------------------------------------"
-
-		## Get FS mountpoint
-		mountPoint="$(zfs get -H mountpoint ${zDataSet} | awk '{ print $3 }' | head -n 1)"
-		[[ "${mountPoint,,}" == "legacy" ]] && isLegacy=1
-		if ((isLegacy)); then
-			mountPoint="$(zfs get -H ${custProp_Mountpoint} ${zDataSet} | awk '{print $3}' | head -n 1)"
-		fi
-
-		if [[ -z "${mountPoint}" ]]; then
-			echo "❌ Error: Could not determine mountpoint for ZFS dataset '${zDataSet}'. May already be unmounted."
-			continue
-		fi
-		if ((isLegacy)); then
-			echo "• Legacy mountpoint: '${mountPoint}'"
-		else
-			echo "• Mountpoint: '${mountPoint}'"
-		fi
-
-		## Get username of the mountpoint from /etc/passwd
-		userName="$(getent passwd | grep "${mountPoint}" | cut -f1 -d: || true)"
-		if [[ -z "${userName}" ]]; then
-			echo "[ ❌ FYI: Could not determine username from mountpoint '${mountPoint}'. Skipping. ]"
-			continue
-		fi
-		echo "• Username: '${userName}'"
-
-		## Make sure the username isn't the one running this script
-		if [[ "${userName}" == "${USER}" ]] || [[ "${userName}" == "${SUDO_USER}" ]]; then
-			echo "❌ The target username '${userName}' is the one running this script, and my programming forbids me from forcefully killing your processes. Skipping just on principle."
-			continue
-		fi
-		echo "✔️ The target username '${userName}' is not the one running this script."
-
-		## Is user logged out?
-		if [[ -n "$(echo -e "${loggedInUserList}" | grep -iPo "^${userName}\$" 2>/dev/null || true)" ]]; then
-			echo "❌ User '${userName}' seems to be still logged in. Skipping."
-			continue
-		fi
-		echo "✔️ User '${userName}' seems to be logged out."
-
-		## Is ZFS dataset encrypted? The preferred method of getting ZFS property values is: `zfs get encryption ${zDataSet} -ovalue -H`, but it doesn't seem reliable, hence grep and awk.
-		if [[ -n "$(zfs get all ${zDataSet} | grep -iP "encryption[ ]+off" || true)" ]]; then
-			echo "❌ User ZFS dataset '${zDataSet}' in not encrypted, no point in unmounting, skipping."
-			continue
-		fi
-		echo "✔️ User ZFS dataset '${zDataSet}' is encrypted, therefore should be unmounted."
-
-		## Show info; fuser
-		echo -e "\nFYI - BEFORE: processes that have something open in '${mountPoint}':"
-
-		echo -e "\nfuser -uvM -m '${mountPoint}':"
-		fuser -uvM -m "$1" 2>/dev/null || true
-
-		echo -e "\n(lsof '${mountPoint}'):"
-		lsof "$1" 2>/dev/null || true
-
-		## Attempt 1/3 to unmount using a variety of ways
-		fUnmount_TryAllTheWays
-		if [[ $(fIsMounted "${mountPoint}") == "true" ]]; then
-
-			## Not unmounted yet. Gracefully close those processes with write access to mountpoint (silently).
-			sleep 2
-			fEchoAndDo "sudo fuser -15 -kswM -m '${mountPoint}'"  "Attempting to gracefully close processes with write access to anything at or below '${mountPoint}' ..."
-
-			## Attempt 2/3 to unmount using a variety of ways
-			fUnmount_TryAllTheWays
-			if [[ $(fIsMounted "${mountPoint}") == "true" ]]; then
-
-				## Still not unmounted yet. Forcefully and immediately KILL all processes with any kind of access to mountpoint.
-				sleep 2
-				fEchoAndDo "sudo fuser -9 -ksM -m '${mountPoint}'"  "Attempting to forcefully and immediately kill all processes accessing anythig at or below '${mountPoint}' ..."
-
-				## Attempt 3/3 to unmount using a variety of ways
-				fUnmount_TryAllTheWays
-				if [[ $(fIsMounted "${mountPoint}") == "true" ]]; then
-
-					## Punt, just pretend it's unmounted and hope processes let go of files.
-					fEchoAndDo "sudo umount -f --lazy --recursive '${mountPoint}'"  "Lazily and recursively unmounting '${mountPoint}' as a punt ..."
-					if [[ lastExitCode -ne 0 ]]; then
-						fEchoAndDo "sudo umount -f --lazy '${mountPoint}'"  "Lazily unmounting just '${mountPoint}' as a last-ditch punt ..."
-					fi
-
-				fi
-			fi
-		fi
-
-		if [[ $(fIsMounted "${mountPoint}") == "true" ]]; then
-			echo -e "\n❌ FAILURE: ZFS dataset '${zDataSet}' is still mounted at '${mountPoint}'."
-		else
-			echo -e "\n✔️ SUCCESS: ZFS dataset '${zDataSet}' is no longer mounted at '${mountPoint}'."
-		fi
-
-		## Try to unload the encryption key.
-		sleep 2
-		fEchoAndDo "sudo zfs unload-key ${zDataSet}"  "Attempting to unloading encryption key for  '${mountPoint}' ..."
-
-		## Show what has files/folders open under user's home folder [after].
-		sleep 2
-		echo -e "\nFYI - AFTER: Processes owned by '${userName}':"
-		sudo ps -u ${userName} 2>/dev/null || true
-
+	## Args
+	local nextArg=""
+	for nextArg in "$@"; do
+		case "${nextArg,,}" in
+			"--cron")    isCron=1 ;;
+			"--dry-run") isDryRun=1 ;;
+			*) echo -e "\nUsage: ${meName} [--cron] [--dry-run]\n\t--cron ....: Log only to '${logFile}' (no stdout); used by /etc/cron.d.\n\t--dry-run .: Report what would be done, change nothing.\n" >&2; return 1 ;;
+		esac
 	done
 
-	echo -e "\n\n[ Done. ]\n"
-
-}
-
-
-function fIsMounted(){
-	## Input either a ZFS dataset name, or it's mountpoint
-	local zfsDatasetOrMountpoint="$1"
-	local retVal="false"
-	[[ -n "$(mount | grep -iPo "(^| )${zfsDatasetOrMountpoint}( |\$)" || true)" ]] && retVal="true"
-	echo ${retVal}
-}
-
-
-function fUnmount_TryAllTheWays(){
-
-	[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
-
-	## Try to unmount ZFS normally
-	sleep 2
-	if ((isLegacy)); then
-		fEchoAndDo "sudo umount ${mountPoint}"
-		[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
-		sleep 2
-		fEchoAndDo "sudo zfs unmount ${zDataSet}"
-	else
-		fEchoAndDo "sudo zfs unmount ${zDataSet}"
-		[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
-		sleep 2
-		fEchoAndDo "sudo umount ${mountPoint}"
+	## Must be root; auto-elevate for convenience on manual runs.
+	if [[ "${EUID}" -ne 0 ]]; then
+		exec sudo "$0" "$@"
 	fi
-	[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
 
-	## Try to recursively FS unmount (eg encfs, cifs)
-	sleep 2
-	fEchoAndDo "sudo umount --recursive ${mountPoint}"
-	[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
+	## Single instance: bail immediately (successfully) if another instance holds the lock.
+	## flock releases on process death and /dev/shm clears on reboot, so stale locks are impossible.
+	exec {lockFd}>"${lockFile}"
+	if ! flock -n "${lockFd}"; then
+		echo "FYI: Another instance of ${meName} is already running (lock: '${lockFile}'). Exiting."
+		fSyslog "FYI: Another instance is already running; exiting."
+		return 0
+	fi
 
-	## Get a little more forceful with native ZFS
-	sleep 2
-	fEchoAndDo "sudo zfs unmount -f ${zDataSet}"
-	[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
+	## Logging: everything below goes to ${logFile}; also to stdout unless --cron. Self-rotates.
+	if [[ -f "${logFile}" && "$(stat -c %s "${logFile}" 2>/dev/null || echo 0)" -gt "${logRotateAtBytes}" ]]; then
+		mv -f "${logFile}" "${logFile}.1"
+	fi
+	if ((isCron)); then
+		exec >>"${logFile}" 2>&1
+	else
+		exec > >(tee -a "${logFile}") 2>&1
+	fi
 
-	## More forceful recursive FS unmount (eg encfs, cifs)
-	sleep 2
-	fEchoAndDo "sudo umount -f --recursive ${mountPoint}"
-	[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
+	fLog "\n\n==============================================================================="
+	fLog "[ ${meName} started $(date "+%Y%m%d-%H%M%S")$( ((isDryRun)) && echo ' (DRY RUN)' || true ) ]"
 
-	## Try plain native FS way
-	sleep 2
-	fEchoAndDo "sudo umount ${mountPoint}"
-	[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
+	## Fail loudly if a hard dependency is missing.
+	local dep=""
+	for dep in awk findmnt flock fuser getent loginctl mountpoint pkill stat systemctl systemd-escape tac umount who zfs; do
+		if ! command -v "${dep}" &>/dev/null; then
+			fLog "❌ ERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: '${dep}'."
+			fSyslog "ERROR: dependency not installed: '${dep}'."
+			return 1
+		fi
+	done
 
-	## Try plain native FS way, more agressively
-	sleep 2
-	fEchoAndDo "sudo umount -f ${mountPoint}"
-	[[ $(fIsMounted "${mountPoint}") == "false" ]] && return
+	## Discover users with encrypted ZFS homes: every filesystem with ${custProp_UserName} locally set.
+	## Lexical sort guarantees parents come before their children, so the first dataset seen for a user
+	## is their top-level home dataset; deeper ones with the same (inheritable-looking) local prop are skipped.
+	local -A rootDatasetForUser=()
+	local nextDataset=""  nextUserName=""
+	while IFS=$'\t' read -r nextDataset nextUserName; do
+		[[ -z "${nextDataset}" || -z "${nextUserName}" ]]  &&  continue
+		if [[ "${nextUserName}" == "root" ]]; then
+			fLog "⚠️  FYI: refusing on principle to ever watchdog user 'root' ('${nextDataset}'). Skipping."
+			continue
+		fi
+		if [[ -v "rootDatasetForUser[${nextUserName}]" ]]; then
+			if [[ "${nextDataset}" == "${rootDatasetForUser[${nextUserName}]}"/* ]]; then
+				continue  ## Child of the already-recorded top-level dataset.
+			fi
+			fLog "⚠️  FYI: user '${nextUserName}' has multiple unrelated datasets marked ('${rootDatasetForUser[${nextUserName}]}' and '${nextDataset}'); only handling the first."
+			continue
+		fi
+		rootDatasetForUser["${nextUserName}"]="${nextDataset}"
+	done < <(zfs get -H -t filesystem -s local -o name,value "${custProp_UserName}" 2>/dev/null | LC_ALL=C sort || true)
+
+	if [[ "${#rootDatasetForUser[@]}" -eq 0 ]]; then
+		fLog "FYI: No ZFS filesystems found with a local '${custProp_UserName}' property; nothing to watchdog."
+		fLog "[ Done. ]"
+		return 0
+	fi
+
+	## Process each user; one user's failure doesn't stop the others.
+	local -i errorCount=0
+	for nextUserName in "${!rootDatasetForUser[@]}"; do
+		fProcessUser "${nextUserName}" "${rootDatasetForUser[${nextUserName}]}"  ||  errorCount+=1
+	done
+
+	fLog "\n[ Done. Users checked: ${#rootDatasetForUser[@]}; failures: ${errorCount}. ]\n"
+	[[ "${errorCount}" -gt 0 ]]  &&  return 1
+	return 0
 
 }
 
 
-function fEchoAndDo(){
-	local -r cmdString="$1"
-	local -r optionalShowInfoFirst="$2"
+## File-scope flags (set in fMain's arg parsing; declared here so all functions can see them).
+declare -i isCron=0
+declare -i isDryRun=0
 
-	echo
-	[[ -n "${optionalShowInfoFirst}" ]] && echo "[ ${optionalShowInfoFirst} ]"
-	echo "Executing: ${cmdString}"
-
-	set +e
-		eval "${cmdString}"
-		lastExitCode=$?
-		true
-	set -e
-
-}
-
-
-## Re-launch, forked to background and logging output.
-if [[ "$1" != "REENTRANT" ]]; then
-	if [[ ! -d "/var/log/$(basename "$0")" ]]; then mkdir "/var/log/$(basename "$0")"; fi
-	("$0" "REENTRANT" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" &> "/var/log/$(basename "$0")/$(basename "$0")-$(date "+%Y%m%d-%H%M%S").log") & disown
-else
-	shift || true
-	fMain "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
-fi
-
-exit
+fMain "$@"
 
 
 ##	History:
@@ -262,3 +432,22 @@ exit
 ##			- Significantly improved error and conditions checking.
 ##			- Abort if being run by current user.
 ##			- Added user-friendly text string arg to fEchoAndDo().
+##		- 20260812: Full rewrite; the old version was a no-op on current systems.
+##			- Datasets are now discovered via the same '${custProp_UserName}' ZFS property the login script
+##			  uses - NOT by grepping 'mount' output for a hardcoded 'rpool/(USERDATA|homez)' pool layout
+##			  (which no longer matched anything, so the old script always exited at its first check).
+##			- Logged-in detection now uses 'loginctl' instead of 'users'/utmp, which misses GUI sessions.
+##			- Designed for /etc/cron.d (hourly); companion cron file added to the repo. The old
+##			  self-fork/disown re-entrancy scheme is gone.
+##			- Single-instance enforcement via flock on /dev/shm (self-clearing; wiped on reboot).
+##			- Cleanly escalates: loginctl terminate-user → systemd mount-unit stop (parent-first
+##			  passes, repeated while progress is made - see fTryUnmountViaSystemd()) → direct
+##			  unmount → recursive 'umount -R' (the only rung that clears foreign mounts nested in
+##			  the tree - see fTryUmountRecursive()) → SIGTERM+retry → SIGKILL+force → lazy unmount;
+##			  direct rungs go children-before-parents; then 'zfs unload-key', verified.
+##			- Unloads the encryption key (the old version tried, but usually after failing to unmount).
+##			- Skips: logged-in users, lingering users, the invoking user, root, nonexistent accounts.
+##			- Fixed bugs: 'fuser/lsof \"\$1\"' on an empty arg; PATH missing a ':'; '[[ lastExitCode -ne 0 ]]'
+##			  testing a literal string; username derived by grepping all of /etc/passwd for a substring.
+##			- Self-rotating log at '/var/log/<name>.log' (+ .1), plus summaries to syslog.
+##			- Added --dry-run mode; 'set -euo pipefail' throughout.

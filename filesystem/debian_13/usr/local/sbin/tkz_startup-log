@@ -1,0 +1,257 @@
+#!/bin/bash
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+
+##	Purpose:
+##		- Records structured, nestable progress markers from boot-time and login-time scripts, into the
+##		  systemd journal. Companion viewer that renders them as an indented tree: 'tkz_show-startup-log'.
+##		- Replaces the older file-based logger, which kept its own plain-text log plus an indent counter in
+##		  '/dev/shm'. The journal already provides timestamps, per-record identity, boot scoping, rotation,
+##		  and persistence, so none of that needs reimplementing - only the nesting depth does.
+##	Syntax:
+##		tkz_startup-log  <caller>  <begin|end|note>  [message]
+##		tkz_startup-log  --reset                 ## Forget any unbalanced nesting (see Notes).
+##		tkz_startup-log  --help | --version
+##	Arguments:
+##		- caller ..: Free-form identity of whatever is logging - conventionally its full path.
+##		- action ..: One of:
+##			begin | start ..: Emits the record, THEN increases nesting depth by one.
+##			end   | stop ...: Decreases nesting depth by one, THEN emits the record (with elapsed time).
+##			note  | comment : Emits the record at the current depth.
+##	Notes:
+##		- NEVER fails its caller. Every failure path is swallowed and exit code 0 is returned, because this
+##		  runs from the boot path where a logger taking down its caller would be far worse than a lost log
+##		  line. Pass '--strict' to get real exit codes when testing.
+##		- Nesting state lives in '${stateDir}' - i.e. on '/run' for root, or the caller's XDG runtime dir
+##		  otherwise. Both are tmpfs cleared at boot, so unbalanced 'begin's can never persist across boots.
+##		  '--reset' clears it within a boot.
+##		- Concurrency-safe: the nesting stack is read-modify-written under an flock, so parallel callers
+##		  (e.g. several units starting at once) can't corrupt each other's depth.
+##		- Emitted journal fields, queryable directly (see also 'tkz_show-startup-log'):
+##			SYSLOG_IDENTIFIER=tkz_startup   MESSAGE=<message>       TKZ_CALLER=<caller>
+##			TKZ_PHASE=<begin|end|note>      TKZ_DEPTH=<0-based>     TKZ_ELAPSED_MS=<only on 'end'>
+##		  For example:
+##			journalctl -b -t tkz_startup -o json-pretty
+##			journalctl -b -t tkz_startup TKZ_PHASE=end     ## Every completed block, with its duration.
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+
+
+set -uo pipefail
+
+declare -r meName="$(basename "${0}")"
+declare -r meVersion="1.0.0"
+
+## Journal identity that 'tkz_show-startup-log' and any hand-written 'journalctl' query keys off of.
+declare -r journalIdentifier="tkz_startup"
+
+## Nesting state. '/run' for root; the caller's own runtime dir otherwise (both tmpfs, both wiped at boot).
+declare stateDir="/run/tkz"
+[[ "${EUID}" -ne 0 ]]  &&  stateDir="${XDG_RUNTIME_DIR:-/run/user/${EUID}}/tkz"
+declare -r stateDir
+declare -r stackFile="${stateDir}/startup-log.stack"
+
+## Set by fParseArgs().
+declare    argCaller=""
+declare    argAction=""
+declare    argMessage=""
+
+
+function fShowSyntax(){
+	cat <<- EOF_syntax
+
+		${meName} version ${meVersion}
+
+		Records structured, nestable progress markers into the systemd journal.
+		Render them as an indented tree with: tkz_show-startup-log
+
+		Syntax:
+
+		  ${meName}  <caller>  <begin|end|note>  [message]
+		  ${meName}  --reset
+		  ${meName}  --help | --version
+
+		Options:
+
+		  --reset    Forget any unbalanced nesting for this boot.
+		  --strict   Return real exit codes instead of always succeeding.
+
+		Examples:
+
+		  ${meName}  /etc/rc.local  begin
+		  ${meName}  /etc/rc.local  note   "Doing the thing ..."
+		  ${meName}  /etc/rc.local  end
+
+	EOF_syntax
+}
+
+
+function fSanitize(){
+	## Journal export syntax is line-oriented, so a newline inside a value would corrupt the record.
+	## Collapse all whitespace runs (incl. newlines and tabs) into single spaces, and trim the ends.
+	local text="$*"
+	text="${text//[$'\n\r\t']/ }"
+	while [[ "${text}" == *"  "* ]]; do text="${text//  / }"; done
+	text="${text# }"
+	text="${text% }"
+	printf '%s' "${text}"
+}
+
+
+function fParseArgs(){
+	local nextArg=""
+	local -a positionalArgs=()
+	for nextArg in "$@"; do
+		case "${nextArg,,}" in
+			"--strict")                     : ;;  ## Acted on at the entry point below, not here.
+			"-h"|"--help")                  fShowSyntax; exit 0 ;;
+			"-v"|"--ver"|"--version")       echo "${meName} version ${meVersion}"; exit 0 ;;
+			"--reset")                      fResetState; exit 0 ;;
+			*)                              positionalArgs+=("${nextArg}") ;;
+		esac
+	done
+
+	[[ "${#positionalArgs[@]}" -lt 2 ]]  &&  { fShowSyntax; exit 1; }
+
+	argCaller="$(fSanitize "${positionalArgs[0]}")"
+	argMessage="$(fSanitize "${positionalArgs[*]:2}")"
+
+	## Normalize the action, accepting the historical synonyms.
+	case "${positionalArgs[1],,}" in
+		"begin"*|"start"*)     argAction="begin" ;;
+		"end"*|"stop"*)        argAction="end"   ;;
+		"note"|"comment")      argAction="note"  ;;
+		*)                     fShowSyntax; exit 1 ;;
+	esac
+}
+
+
+function fInsureStateDir(){
+	[[ -d "${stateDir}" ]]  &&  return 0
+	mkdir -p "${stateDir}" 2>/dev/null  ||  return 1
+	chmod 0755 "${stateDir}" 2>/dev/null  ||  true
+	return 0
+}
+
+
+function fResetState(){
+	rm -f "${stackFile}" 2>/dev/null  ||  true
+	echo "[ ${meName}: nesting state cleared. ]"
+}
+
+
+function fNowMs(){
+	date +%s%3N 2>/dev/null  ||  echo 0
+}
+
+
+function fUpdateStackAndGetDepth(){
+	## Reads, mutates and rewrites the nesting stack atomically, then echoes:  <depth> <elapsedMs>
+	## The stack holds one line per open 'begin', each line being the epoch-milliseconds it opened at.
+	## Depth is simply the stack's height, so a corrupt or missing stack degrades to depth 0 - never an error.
+	local -r action="$1"
+	local -i depth=0
+	local -i elapsedMs=-1
+	local -i openedAtMs=0
+	local -a stackLines=()
+	local    nextLine=""
+
+	## Everything below runs while holding an exclusive lock on the stack file.
+	exec {lockFd}>>"${stackFile}" 2>/dev/null  ||  { echo "0 -1"; return 0; }
+	flock -w 2 "${lockFd}" 2>/dev/null  ||  true
+
+	while IFS= read -r nextLine; do
+		[[ -n "${nextLine}" ]]  &&  stackLines+=("${nextLine}")
+	done < "${stackFile}" 2>/dev/null
+
+	case "${action}" in
+		"begin")
+			## Emit at the current depth, then descend.
+			depth="${#stackLines[@]}"
+			stackLines+=("$(fNowMs)")
+		;;
+		"end")
+			## Ascend first, so the 'end' lines up with its matching 'begin'.
+			if [[ "${#stackLines[@]}" -gt 0 ]]; then
+				openedAtMs="${stackLines[-1]}"
+				unset 'stackLines[-1]'
+				elapsedMs=$(( $(fNowMs) - openedAtMs ))
+				[[ "${elapsedMs}" -lt 0 ]]  &&  elapsedMs=-1
+			fi
+			depth="${#stackLines[@]}"
+		;;
+		*)
+			depth="${#stackLines[@]}"
+		;;
+	esac
+
+	printf '%s\n' "${stackLines[@]}" > "${stackFile}" 2>/dev/null  ||  true
+	## Guard against printf emitting one blank line for an empty array.
+	[[ "${#stackLines[@]}" -eq 0 ]]  &&  { : > "${stackFile}" 2>/dev/null || true; }
+
+	exec {lockFd}>&-
+	echo "${depth} ${elapsedMs}"
+}
+
+
+function fEmit(){
+	local -r depth="$1"
+	local -r elapsedMs="$2"
+
+	## Preferred path: a structured journal record, so the viewer never has to parse a formatted string.
+	if command -v logger &>/dev/null; then
+		{
+			printf 'MESSAGE=%s\n'           "${argMessage:-${argAction}}"
+			printf 'SYSLOG_IDENTIFIER=%s\n' "${journalIdentifier}"
+			printf 'TKZ_CALLER=%s\n'        "${argCaller}"
+			printf 'TKZ_PHASE=%s\n'         "${argAction}"
+			printf 'TKZ_DEPTH=%s\n'         "${depth}"
+			[[ "${elapsedMs}" -ge 0 ]]  &&  printf 'TKZ_ELAPSED_MS=%s\n' "${elapsedMs}"
+			printf 'PRIORITY=6\n'
+		} | logger --journald 2>/dev/null  &&  return 0
+
+		## Fallback for a 'logger' without '--journald' (non-util-linux): unstructured, but still journaled.
+		logger -t "${journalIdentifier}" -- "[${depth}] ${argAction} '${argCaller}' ${argMessage}" 2>/dev/null  &&  return 0
+	fi
+
+	## Last resort, for a system with no syslog at all: stderr, which systemd captures for units anyway.
+	echo "[ ${journalIdentifier}: [${depth}] ${argAction} '${argCaller}' ${argMessage} ]" >&2
+	return 0
+}
+
+
+function fMain(){
+	fParseArgs "$@"
+	fInsureStateDir  ||  true
+
+	local -r stackResult="$(fUpdateStackAndGetDepth "${argAction}")"
+	fEmit "${stackResult%% *}" "${stackResult##* }"
+}
+
+
+## Never take the caller down with us: swallow everything unless '--strict' was requested.
+if [[ " $* " == *" --strict "* ]]; then
+	fMain "$@"
+else
+	fMain "$@" 2>/dev/null || true
+	exit 0
+fi
+
+
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## History:
+##		- 20260813 JC: Created, replacing the file-based 'x9startup-log' in the Tukzedo boot path.
+##			- Logs to the systemd journal as structured records, rather than to a plain-text file under
+##			  '/tmp' (which had to be shuffled out to '/var/tmp' and back whenever '/tmp' was emptied).
+##			- Nesting state moved from '/dev/shm/x9/' to '/run/tkz/' (or the caller's XDG runtime dir),
+##			  and is now flock-guarded, so concurrent callers can't corrupt the depth.
+##			- Depth is now the height of a timestamp stack rather than a bare counter, which also yields
+##			  'TKZ_ELAPSED_MS' on every 'end' for free.
+##			- No world-writable files anywhere; the journal handles multi-user access properly.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

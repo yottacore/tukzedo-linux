@@ -1,104 +1,331 @@
-#!/bin/sh
-
-#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
-## Initialize and start log
-mePath_1mvp0kj="/etc/rc.localx9.d/020-insure-efi-mount"
-echo "[ ${mePath_1mvp0kj} ]"
-"/usr/local/bin/x9/sh/x9startup-log"  "${mePath_1mvp0kj}"  begin  2>/dev/null || true
-#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
-
-
-fMain() {
-
-	sleep 5  ## Give things some time to settle down.
-
-	## Flags
-	dirExists_boot=0            ; [ -d /boot                                      ]  &&  dirExists_boot=1
-	dirHasContents_boot=0       ; [ -n "$(ls -1A /boot/     2>/dev/null || true)" ]  &&  dirHasContents_boot=1
-	dirExists_boot_efi=0        ; [ -d /boot/efi                                  ]  &&  dirExists_boot_efi=1
-	dirHasContents_boot_efi=0   ; [ -n "$(ls -1A /boot/efi/ 2>/dev/null || true)" ]  &&  dirHasContents_boot_efi=1
-	isMounted_boot_efi=0        ; [ -n "$(findmnt /boot/efi 2>/dev/null || true)" ]  &&  isMounted_boot_efi=1
-
-	#DEBUG
-	#echo "dirExists_boot ............: '${dirExists_boot}'"
-	#echo "dirHasContents_boot .......: '${dirHasContents_boot}'"
-	#echo "dirExists_boot_efi ........: '${dirExists_boot_efi}'"
-	#echo "dirHasContents_boot_efi ...: '${dirHasContents_boot_efi}'"
-	#echo "isMounted_boot_efi ........: '${isMounted_boot_efi}'"
-
-	## Check to see if we're all good and have nothing to do.
-	[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"   = "1_1_1" ]  &&  { fShowMsg "'/boot/efi' seems to already be properly mounted, nothing to do."                            ; return 0; }
-
-	## Check to see if a problem exists that could be made worse if we tried to solve here.
-	[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"   = "0_1_1" ]  &&  { fShowMsg "Can't mount '/boot/efi' because it seems a real dir exists with that name and has contents." ; return 1; }
-	[ "${dirExists_boot}"                                                        = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because '/boot' doesn't exist (yet?)."                               ; return 1; }
-	[ "${dirExists_boot_efi}"                                                    = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because that mountpoint dir doesn't exist."                          ; return 1; }
-	[ "${dirHasContents_boot}"                                                   = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because '/boot' is empty, possibly not mounted (yet?)."              ; return 1; }
-
-	##
-	## If we made it this far, /boot/efi is either mounted but shadowed by later-mounted /boot, or just not mounted in the first place. Either way, we know the dir exists but is empty.
-
-	if [ "${isMounted_boot_efi}" = "0" ]; then
-		fShowMsg "FYI: '/boot/efi' was not mounted before."
-	else
-
-		## Try to unmount /boot/efi if necessary (e.g. it's mounted but shadowed by /boot mounted later.)
-		fShowMsg "FYI: '/boot/efi' was previously mounted, but apparently shadowed and appears empty."
-		fShowMsg "Attempting to fix, first by unmounting '/boot/efi' ..."
-		sudo umount -fR /boot/efi 2>/dev/null || sudo umount -fRl /boot/efi
-
-		## Re-init flags
-		dirExists_boot_efi=0        ; [ -d /boot/efi                                  ]  &&  dirExists_boot_efi=1
-		dirHasContents_boot_efi=0   ; [ -n "$(ls -1A /boot/efi/ 2>/dev/null || true)" ]  &&  dirHasContents_boot_efi=1
-		isMounted_boot_efi=0        ; [ -n "$(findmnt /boot/efi 2>/dev/null || true)" ]  &&  isMounted_boot_efi=1
-
-		## New validation
-		[ "${isMounted_boot_efi}"                                                    = "1"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because it is being shadowed by a parent mount (e.g. '/boot'), but '/boot/efi' refuses to unmount in order to be remounted correctly." ; return 1; }
-		## Re-validate earlier validation
-		[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"   = "0_1_1" ]  &&  { fShowMsg "Can't mount '/boot/efi' because it seems a real dir exists with that name and has contents." ; return 1; }
-		[ "${dirExists_boot_efi}"                                                    = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because that mountpoint dir doesn't exist."                 ; return 1; }
-		[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"  != "0_1_0" ]  &&  { fShowMsg "Can't mount '/boot/efi' because of an unexpected combination of states of [dir mounted?], [dir exists?], and [dir has contents?]." ; return 1; }
-
-	fi
-
-	## OK we are going to re-trigger /etc/fstab, wich should in theory remount /boot/efi
-	fShowMsg "Attempting to mount '/boot/efi' according to its definition in '/etc/fstab' ..."
-	sudo systemctl daemon-reload; sudo mount /boot/efi
-
-	## Re-init flags
-	dirExists_boot_efi=0        ; [ -d /boot/efi                                  ]  &&  dirExists_boot_efi=1
-	dirHasContents_boot_efi=0   ; [ -n "$(ls -1A /boot/efi/ 2>/dev/null || true)" ]  &&  dirHasContents_boot_efi=1
-	isMounted_boot_efi=0        ; [ -n "$(findmnt /boot/efi 2>/dev/null || true)" ]  &&  isMounted_boot_efi=1
-
-	## Final validation
-	[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"   = "0_1_1" ]  &&  { fShowMsg "Can't mount '/boot/efi' because a real dir exists with that name and has contents." ; return 1; }
-	[ "${dirExists_boot_efi}"                                                    = "0"     ]  &&  { fShowMsg "Can't mount '/boot/efi' because that mountpoint dir doesn't exist."                 ; return 1; }
-	[ "${isMounted_boot_efi}_${dirExists_boot_efi}_${dirHasContents_boot_efi}"  != "1_1_1" ]  &&  { fShowMsg "Can't mount '/boot/efi' because of an unexpected combination of states of dir is mounted, dir exists, and dir has contents." ; return 1; }
-
-	fShowMsg "Successfully mounted '/boot/efi'."
-
-}
-
-fShowMsg(){
-	echo "[ ${mePath_1mvp0kj}.fMain(): ${1} ]"
-	"/usr/local/bin/x9/sh/x9startup-log"  "${mePath_1mvp0kj}"  comment "${1}"  2>/dev/null || true
-}
-
-fMain
-
-
-#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
-"/usr/local/bin/x9/sh/x9startup-log"  "${mePath_1mvp0kj}"  end  2>/dev/null || true
-#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
-
+#!/bin/bash
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+#  shellcheck disable=2120  ## 'References arguments, but none are ever passed.' Valid function argument overloading.
 
 ##	Purpose:
-##		- Makes sure UEFI partition is mounted at /boot/efi. If not, mounts it.
-##		- This is important on some setups, e.g. complicated ZFS setups, because the /boot zpool might mount AFTER /boot/efi, thus hiding it.
-##			- To fix, first the original /boot/efi needs to be unmounted, then remounted.
+##		- Makes sure the EFI system partition is actually mounted and readable at its mountpoint
+##		  (default '/boot/efi'), and repairs it if not.
+##		- Exists because on layered setups - ZFS root, a separate '/boot', an ESP nested inside it - the
+##		  ESP can end up mounted but SHADOWED: a later mount over '/boot' hides the already-mounted
+##		  '/boot/efi' underneath it. The mountpoint then looks present-but-empty, and anything writing
+##		  kernels or UKIs there (notably 'tkz_rebuild-uki') silently writes into the wrong filesystem.
+##		  Fixing that requires unmounting the shadowed mount first, then remounting it.
+##	Syntax:
+##		tkz_insure-efi-mount  [mountpoint]  [options]
+##	Options:
+##		    --check ..........: Report the state and exit; never change anything. Exit code still reflects
+##		                        whether the mountpoint is healthy, so it works as a monitoring probe.
+##		    --dry-run ........: Say what would be done, but don't do it.
+##		    --wait <seconds> .: Poll for up to this long for the mountpoint to become healthy on its own
+##		                        before intervening. Useful when racing an async mount; 0 = don't wait.
+##		-h, --help ...........: This.
+##	Exit codes:
+##		0 = mountpoint is healthy (either already, or after a successful repair).
+##		1 = mountpoint is unhealthy and could not be safely repaired; the reason is logged.
+##		2 = usage error.
 ##	Notes:
-##		Remember to not 'exit' anything, anywhere, in the chain of rc.local processing.
-##	History:
+##		- Runs as root. If invoked as a normal user it re-executes itself via sudo.
+##		- Prefers asking systemd to start the mount unit (so systemd's own view of the mount stays
+##		  correct), and only falls back to plain 'mount' if that fails or the unit is masked. NOTE that a
+##		  masked mount unit is itself worth fixing - see 'systemctl unmask <unit>' - since a masked unit
+##		  means systemd will never mount it at boot, leaving this script to do it late every time.
+##		- Deliberately refuses to act when the mountpoint holds real files while unmounted: that means
+##		  someone wrote into the bare directory, and mounting over it would hide data rather than lose it,
+##		  but would also leave that data stranded and invisible. That needs a human.
+##		- Normally invoked by 'tkz-insure-efi-mount.service' (in this repo under
+##		  'filesystem/debian_13/etc/systemd/system/'). Progress is logged to the journal both as unit
+##		  output and as structured 'tkz_startup-log' records:
+##			journalctl -b -u tkz-insure-efi-mount.service
+##			tkz_show-startup-log
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+
+
+set -euo pipefail
+
+declare -r meName="$(basename "${0}")"
+declare -r mePath="$(readlink -f "${0}")"
+declare -r startupLogger="/usr/local/sbin/tkz_startup-log"
+
+## Options
+declare    mountPoint="/boot/efi"
+declare -i isCheckOnly=0
+declare -i isDryRun=0
+declare -i waitSeconds=0
+
+## Derived at startup by fInit().
+declare    mountUnitName=""
+declare    parentDir=""
+
+
+function fLog(){
+	echo "[ ${meName}: $* ]"
+	[[ -x "${startupLogger}" ]]  &&  "${startupLogger}" "${mePath}" note "$*"  ||  true
+}
+
+function fLogBegin(){ [[ -x "${startupLogger}" ]] && "${startupLogger}" "${mePath}" begin "$*" || true; }
+function fLogEnd(){   [[ -x "${startupLogger}" ]] && "${startupLogger}" "${mePath}" end   "$*" || true; }
+
+
+function fShowSyntax(){
+	echo
+	sed -n '/^##\tSyntax:/,/^##\tNotes:/p' "${0}" | sed '$d' | sed 's/^##\t\?//; s/^\t/  /'
+	echo
+}
+
+
+function fThrowUsageError(){
+	echo >&2
+	echo "${meName}: $*" >&2
+	echo "Try '${meName} --help'." >&2
+	echo >&2
+	exit 2
+}
+
+
+function fParseArgs(){
+	local -i sawMountPoint=0
+	while [[ "$#" -gt 0 ]]; do
+		case "${1,,}" in
+			"--check")        isCheckOnly=1; shift ;;
+			"--dry-run")      isDryRun=1;    shift ;;
+			"--wait")         [[ "$#" -ge 2 ]] || fThrowUsageError "'--wait' needs a value."
+			                  waitSeconds="$2";  shift 2 ;;
+			"-h"|"--help")    fShowSyntax; exit 0 ;;
+			-*)               fThrowUsageError "Unrecognized option: '$1'." ;;
+			*)
+				[[ "${sawMountPoint}" -eq 1 ]]  &&  fThrowUsageError "Only one mountpoint may be given."
+				mountPoint="$1"; sawMountPoint=1; shift
+			;;
+		esac
+	done
+
+	[[ "${waitSeconds}" =~ ^[0-9]+$ ]]  ||  fThrowUsageError "'--wait' needs a whole number of seconds."
+
+	## Normalize away any trailing slash, so mountpoint comparisons and unit-name escaping stay consistent.
+	[[ "${mountPoint}" != "/" ]]  &&  mountPoint="${mountPoint%/}"
+	[[ "${mountPoint}" == /* ]]   ||  fThrowUsageError "The mountpoint must be an absolute path: '${mountPoint}'."
+}
+
+
+function fInsureRoot(){
+	[[ "${EUID}" -eq 0 ]]  &&  return 0
+
+	## Modes that never change anything don't need root: reading mount state is unprivileged, and
+	## silently prompting for a password just to print help would be obnoxious.
+	local nextArg=""
+	for nextArg in "$@"; do
+		case "${nextArg,,}" in
+			"-h"|"--help"|"-v"|"--version"|"--check"|"--dry-run")  return 0 ;;
+		esac
+	done
+
+	command -v sudo &>/dev/null  ||  { echo "${meName}: must run as root." >&2; exit 1; }
+	echo "[ ${meName}: not root; re-executing via sudo ... ]"
+	exec sudo -- "${mePath}" "$@"
+}
+
+
+function fInit(){
+	parentDir="$(dirname "${mountPoint}")"
+	mountUnitName="$(systemd-escape -p --suffix=mount "${mountPoint}" 2>/dev/null || true)"
+}
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+##	State inspection. Each of these answers exactly one question, so the decision
+##	logic below reads as prose rather than as a wall of bracketed comparisons.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+function fIsMounted(){       mountpoint -q "${1}" 2>/dev/null; }
+function fDirExists(){       [[ -d "${1}" ]]; }
+function fDirHasContents(){  [[ -n "$(ls -1A "${1}" 2>/dev/null || true)" ]]; }
+
+function fIsHealthy(){
+	## Healthy means: it exists, something is mounted on it, and that something isn't empty. An ESP is
+	## never legitimately empty - it has at least an 'EFI' directory - so empty means shadowed or wrong.
+	fDirExists      "${mountPoint}"  &&  \
+	fIsMounted      "${mountPoint}"  &&  \
+	fDirHasContents "${mountPoint}"
+}
+
+function fDescribeState(){
+	local mountedStr="no"   ; fIsMounted      "${mountPoint}"  &&  mountedStr="yes"
+	local existsStr="no"    ; fDirExists      "${mountPoint}"  &&  existsStr="yes"
+	local contentsStr="no"  ; fDirHasContents "${mountPoint}"  &&  contentsStr="yes"
+	local sourceStr="$(findmnt -n -o SOURCE --target "${mountPoint}" 2>/dev/null | head -n 1 || true)"
+	echo "mountpoint '${mountPoint}': exists=${existsStr} mounted=${mountedStr} non-empty=${contentsStr} source='${sourceStr:-none}'"
+}
+
+
+function fWaitForHealthy(){
+	## Gives an in-flight mount a chance to land before we start intervening.
+	local -i remaining="${waitSeconds}"
+	[[ "${remaining}" -le 0 ]]  &&  return 1
+	fLog "Waiting up to ${remaining}s for '${mountPoint}' to become healthy on its own ..."
+	while [[ "${remaining}" -gt 0 ]]; do
+		fIsHealthy  &&  return 0
+		sleep 1
+		remaining=$((remaining - 1))
+	done
+	return 1
+}
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+##	Actions.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+function fTryUnmount(){
+	## Used only for the shadowed case: something is mounted here but reads as empty.
+	if [[ "${isDryRun}" -eq 1 ]]; then
+		fLog "DRY RUN: would unmount '${mountPoint}'."
+		return 0
+	fi
+
+	if [[ -n "${mountUnitName}" ]]; then
+		fLog "Executing: systemctl stop '${mountUnitName}'"
+		systemctl stop "${mountUnitName}" 2>&1  ||  true
+		fIsMounted "${mountPoint}"  ||  return 0
+	fi
+
+	fLog "Executing: umount -R '${mountPoint}'"
+	umount -R "${mountPoint}" 2>&1  ||  true
+	fIsMounted "${mountPoint}"  ||  return 0
+
+	## A lazy unmount detaches the tree even while something still holds it; acceptable here because the
+	## mount we're detaching is already unreachable (shadowed), so nothing can be usefully reading it.
+	fLog "Still mounted; executing: umount -R --lazy '${mountPoint}'"
+	umount -R --lazy "${mountPoint}" 2>&1  ||  true
+	fIsMounted "${mountPoint}"  &&  return 1
+	return 0
+}
+
+
+function fTryMount(){
+	if [[ "${isDryRun}" -eq 1 ]]; then
+		fLog "DRY RUN: would mount '${mountPoint}'."
+		return 0
+	fi
+
+	## Preferred: let systemd do it, so its own state for the mount unit stays truthful.
+	if [[ -n "${mountUnitName}" ]]; then
+		local unitLoadState="$(systemctl show "${mountUnitName}" -p LoadState --value 2>/dev/null || true)"
+		if [[ "${unitLoadState}" == "masked" ]]; then
+			fLog "NOTE: mount unit '${mountUnitName}' is MASKED, so systemd will never mount this at boot."
+			fLog "NOTE: consider 'systemctl unmask ${mountUnitName}' so this repair stops being needed."
+		else
+			fLog "Executing: systemctl start '${mountUnitName}'"
+			systemctl start "${mountUnitName}" 2>&1  ||  true
+			fIsHealthy  &&  return 0
+		fi
+	fi
+
+	## Fallback: mount straight from '/etc/fstab'.
+	fLog "Executing: mount '${mountPoint}'"
+	mount "${mountPoint}" 2>&1  ||  true
+	fIsHealthy  &&  return 0
+	return 1
+}
+
+
+function fRepair(){
+	## Refuse the cases where acting would make things worse or hide data.
+	if ! fDirExists "${mountPoint}"; then
+		fLog "REFUSING: '${mountPoint}' does not exist, so there is nothing to mount onto."
+		return 1
+	fi
+	if ! fDirExists "${parentDir}"; then
+		fLog "REFUSING: parent directory '${parentDir}' does not exist."
+		return 1
+	fi
+	if ! fDirHasContents "${parentDir}"; then
+		fLog "REFUSING: parent directory '${parentDir}' is empty, which usually means it is not mounted yet."
+		return 1
+	fi
+	if ! fIsMounted "${mountPoint}"  &&  fDirHasContents "${mountPoint}"; then
+		fLog "REFUSING: '${mountPoint}' is not mounted but already holds files. Mounting over them would"
+		fLog "REFUSING: strand that data invisibly. Move those files aside, then re-run."
+		return 1
+	fi
+
+	## Shadowed: mounted, but reads as empty because a later mount covers it. Detach before remounting.
+	if fIsMounted "${mountPoint}"; then
+		fLog "'${mountPoint}' is mounted but reads as empty - it appears shadowed by a later mount."
+		if ! fTryUnmount; then
+			fLog "FAILED: could not unmount the shadowed '${mountPoint}' in order to remount it."
+			return 1
+		fi
+		fLog "Unmounted the shadowed mount."
+	else
+		fLog "'${mountPoint}' is not mounted."
+	fi
+
+	fTryMount  ||  return 1
+	return 0
+}
+
+
+function fMain(){
+	fParseArgs "$@"
+	fInit
+
+	fLogBegin
+	fLog "$(fDescribeState)"
+
+	local -i exitCode=0
+
+	if fIsHealthy; then
+		fLog "Nothing to do - '${mountPoint}' is mounted and readable."
+	elif fWaitForHealthy; then
+		fLog "'${mountPoint}' became healthy on its own while waiting."
+	elif [[ "${isCheckOnly}" -eq 1 ]]; then
+		fLog "CHECK ONLY: '${mountPoint}' is NOT healthy. (Re-run without '--check' to attempt a repair.)"
+		exitCode=1
+	elif fRepair; then
+		if [[ "${isDryRun}" -eq 1 ]]; then
+			fLog "DRY RUN: nothing was changed, so '${mountPoint}' is still not mounted."
+		else
+			fLog "Successfully mounted '${mountPoint}'."
+			fLog "$(fDescribeState)"
+		fi
+	else
+		fLog "FAILED: '${mountPoint}' is not usable. $(fDescribeState)"
+		exitCode=1
+	fi
+
+	fLogEnd
+	return "${exitCode}"
+}
+
+
+fInsureRoot "$@"
+fMain "$@"
+
+
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## History:
 ##		- 20260318 JC: Created.
 ##		- 20260326 JC: Only `mount /boot/efi`, not `mount -a`.
 ##		- 20260327 JC: Fixed a logic error that was preventing proper mounting.
+##		- 20260813 JC: Rewritten as a standalone systemd-invoked executable.
+##			- Was sourced into the shared '/etc/rc.local' shell via '/etc/rc.localx9.d/020-insure-efi-mount'.
+##			  That wrapper is retired (kept under 'legacy/' in the repo); this now runs from
+##			  'tkz-insure-efi-mount.service', which also removes the need for the old 'sleep 5' since
+##			  systemd orders it properly instead of guessing.
+##			- No longer calls 'sudo' while already root (which was opening a PAM session per command);
+##			  instead it re-executes via sudo only when actually invoked by a non-root user.
+##			- Mountpoint is now an argument rather than hardcoded, and the mount unit name is derived
+##			  from it with 'systemd-escape', so this works for any mountpoint.
+##			- Prefers 'systemctl start <unit>.mount' over bare 'mount', and reports when the mount unit
+##			  is masked - which is the actual root cause of needing this script at boot.
+##			- Added '--check' (probe, no changes), '--dry-run' and '--wait'; real exit codes throughout.
+##			- Replaced the repeated flag-recomputation blocks with single-purpose state predicates.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

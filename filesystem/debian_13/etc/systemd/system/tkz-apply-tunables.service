@@ -1,0 +1,46 @@
+##	Purpose:
+##		- Applies '/etc/tukzedo/tunables.conf' on every boot, and reports what it changed.
+##	Notes:
+##		- Most of these settings are ALSO carried by the native drop-ins this generates
+##		  ('tkz_apply-tunables --emit-native'), which is what actually applies them at the right moment:
+##		  systemd-sysctl for the sysctls, the initrd/modprobe for module parameters, and udev for block
+##		  device schedulers - including disks hotplugged long after boot.
+##		- So this unit is a safety net and an audit trail, not the primary mechanism. It catches the
+##		  cases the native paths miss: a module parameter whose initrd has not been rebuilt yet, or any
+##		  drop-in that was never regenerated after the config changed.
+##		- Ordered after systemd-sysctl so it observes (and reports on) the native result rather than
+##		  racing it.
+##	History:
+##		- 20260813 JC: Created, replacing '/etc/rc.localx9.d/010-set-kernel-params'.
+
+[Unit]
+Description=Apply Tukzedo kernel and system tunables
+Documentation=file:/etc/tukzedo/tunables.conf
+Documentation=file:/usr/local/sbin/tkz_apply-tunables
+ConditionPathExists=/etc/tukzedo/tunables.conf
+
+After=systemd-sysctl.service
+After=systemd-modules-load.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tkz_apply-tunables
+
+## A tunable that won't take must never hold up or fail the boot; it is reported and moved past.
+SuccessExitStatus=0 1
+TimeoutStartSec=60
+
+## Writing to /proc/sys and /sys rules out the sandboxing options that would make those read-only.
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectHostname=yes
+PrivateNetwork=no
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1270,6 +1270,135 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 		## While that's happening, connect to NordVPN, make sure the pings are still going, including after disconnect.
 			nordvpn connect
 
+
+##
+## Set up encrypted-home auto-mount at login, and the logout watchdog
+
+	## All of the files below are tracked in the repo under 'filesystem/debian_13/', which mirrors the
+	## live filesystem path-for-path. That tree is the authoritative source; deploying is a plain copy.
+	## There is nothing automating the copy, so always verify afterward with 'diff'.
+	## Paths below are relative to the repo's 'filesystem/debian_13/' directory.
+
+	## 1. Mark the datasets that should auto-mount, on each user's TOP-LEVEL home dataset (children inherit).
+		sudo zfs set canmount=noauto                    "rpool_${mUID}/deb/persist/home/${USER}"
+		sudo zfs set x9.custom.automount:user="${USER}" "rpool_${mUID}/deb/persist/home/${USER}"
+
+	## 2. Install the login helper and the logout watchdog.
+	## Note: the login helper's shebang MUST stay '#!/bin/bash -p'. Without '-p', bash silently drops euid
+	##       root under setuid services like 'su', and 'zfs load-key' / 'zfs mount' then fail.
+		sudo cp usr/local/sbin/tkz_zfs-crypthome_login            /usr/local/sbin/
+		sudo cp usr/local/sbin/tkz_zfs-crypthome_logout-watchdog  /usr/local/sbin/
+		sudo chown root:root /usr/local/sbin/tkz_zfs-crypthome_*
+		sudo chmod 755       /usr/local/sbin/tkz_zfs-crypthome_*
+
+	## 3. Install the hourly watchdog cron job.
+	## Note: the filename must not contain a dot - cron silently ignores such files in '/etc/cron.d'.
+		sudo cp etc/cron.d/tkz_zfs-crypthome-logout-watchdog /etc/cron.d/
+		sudo chown root:root /etc/cron.d/tkz_zfs-crypthome-logout-watchdog
+		sudo chmod 644       /etc/cron.d/tkz_zfs-crypthome-logout-watchdog
+
+	## 4. Hook the login helper into PAM.
+	## Note: do NOT copy the repo's 'etc/pam.d/common-auth' over yours. It is a mirror of one specific host,
+	##       and yours will differ (winbind lines, pam-auth-update state, etc.). Add only the one 'auth' line,
+	##       after the 'pam_deny.so' line and before 'pam_permit.so'. Use the repo copy as a reference.
+	## Note: 'requisite' is what enforces "no login unless ALL of the user's datasets mounted". It also means
+	##       that if the script goes missing or loses its exec bit, EVERY password login fails - root console
+	##       included, since only sulogin/rescue bypasses PAM. Take the backup, and keep a root shell open
+	##       until you've confirmed a fresh login works.
+		sudo cp /etc/pam.d/common-auth "/etc/pam.d/common-auth.bak-$(date +%Y%m%d)"
+		sudo nano /etc/pam.d/common-auth
+			## ZFS encrypted home
+			auth    requisite                       pam_exec.so expose_authtok quiet  /usr/local/sbin/tkz_zfs-crypthome_login
+
+	## 5. Verify, from a shell you can keep open. (Read-only unless something actually needs mounting.)
+		sudo PAM_USER="${USER}" tkz_zfs-crypthome_login </dev/null  &&  echo OK
+		sudo tkz_zfs-crypthome_logout-watchdog
+		journalctl -t tkz_zfs-crypthome_login -t tkz_zfs-crypthome_logout-watchdog -n 50
+
+	## Both scripts carry full usage, troubleshooting, and lockout-recovery notes in their own file headers.
+
+
+##
+## Boot-time helpers
+
+	## Boot-time work runs as systemd units. Do NOT also wire these into an rc.local-style chain; they'd
+	## run twice, and the sourced-shell approach has failure modes documented in 'legacy/README.md'.
+
+	## 1. The startup logger and its viewer.
+	## These are optional - every script here also writes plainly to stdout, which systemd captures - but
+	## they're what produces the indented, timed view of a boot.
+		sudo install -o root -g root -m 0755 usr/local/sbin/tkz_startup-log      /usr/local/sbin/
+		sudo install -o root -g root -m 0755 usr/local/sbin/tkz_show-startup-log /usr/local/sbin/
+
+	## 2. The EFI mount safety net.
+	## '/boot/efi' should be mounted by its own generated 'boot-efi.mount' unit, straight from /etc/fstab.
+	## Make sure that unit is NOT masked - if it is, systemd will never mount the ESP at boot, and you're
+	## relying on a late repair every single time:
+		systemctl show boot-efi.mount -p LoadState --value   ## Want 'loaded', not 'masked'.
+		sudo systemctl unmask boot-efi.mount                 ## Only if it came back 'masked'.
+
+	## If it comes back 'masked' AGAIN later, nothing drifted - something re-masked it. Until 20260814,
+	## 'tkz_rebuild-uki' ran 'systemctl mask boot-efi.mount' on every invocation, so each kernel upgrade
+	## silently undid this unmask. That masking has been removed; see the NOTE in that script's fMain().
+	## Two symptoms to recognise, because neither one announces itself:
+	##   - Every boot, 'tkz-insure-efi-mount.service' waits out its full timeout and then repairs the
+	##     mount by hand. It logs 'mount unit boot-efi.mount is MASKED' when it does - so check its
+	##     journal, not just whether '/boot/efi' ended up mounted.
+	##   - With no systemd unit owning the mount, udisks2 will mount and then UNMOUNT the ESP on behalf
+	##     of 'fwupd-refresh.service', minutes into the boot, leaving '/boot/efi' an empty directory on
+	##     the ZFS root. Verify with a forced refresh, which must leave the mount alone:
+		sudo fwupdmgr refresh --force  &&  findmnt /boot/efi
+
+	## The fstab entry needs ZFS ordering, or the mount can be attempted before the pools are imported:
+		grep /boot/efi /etc/fstab
+			UUID=XXXX-XXXX  /boot/efi  vfat  defaults,noatime,x-systemd.after=zfs-import.target  0 2
+
+	## Then install the safety net itself, which catches the remaining case: the ESP mounted but SHADOWED
+	## by a later mount over '/boot', which leaves it looking present-but-empty.
+		sudo install -o root -g root -m 0755 usr/local/sbin/tkz_insure-efi-mount /usr/local/sbin/
+		sudo install -o root -g root -m 0644 etc/systemd/system/tkz-insure-efi-mount.service /etc/systemd/system/
+		sudo systemctl daemon-reload
+		sudo systemctl enable --now tkz-insure-efi-mount.service
+
+	## 3. Verify.
+		systemd-analyze verify /etc/systemd/system/tkz-insure-efi-mount.service
+		tkz_insure-efi-mount --check    ## Probe only; exit 0 means healthy. Safe to run unprivileged.
+		journalctl -b -u tkz-insure-efi-mount.service
+		tkz_show-startup-log            ## The whole boot, as an indented tree with timings.
+
+	## 4. Kernel and system tunables.
+	## One config file holds every tunable; the native drop-ins are GENERATED from it, never hand-edited.
+		sudo install -o root -g root -m 0755 -d /etc/tukzedo
+		sudo install -o root -g root -m 0644 etc/tukzedo/tunables.conf /etc/tukzedo/tunables.conf
+		sudo install -o root -g root -m 0755 usr/local/sbin/tkz_apply-tunables /usr/local/sbin/
+		sudo install -o root -g root -m 0644 etc/systemd/system/tkz-apply-tunables.service /etc/systemd/system/
+		sudo nano /etc/tukzedo/tunables.conf   ## Set values for THIS machine (ARC size scales with RAM).
+		sudo systemctl daemon-reload
+		sudo systemctl enable --now tkz-apply-tunables.service
+
+	## Generate the native drop-ins, and apply the two that don't wait for a reboot:
+		sudo tkz_apply-tunables --emit-native
+		sudo sysctl --system
+		sudo udevadm control --reload  &&  sudo udevadm trigger --subsystem-match=block --action=change
+
+	## Note: module parameters only reach EARLY boot after a UKI rebuild, because dracut here builds a
+	##       generic initrd ('hostonly=no'), which omits /etc/modprobe.d entirely. That is why
+	##       '--emit-native' also writes '/etc/dracut.conf.d/60-tkz-tunables.conf' with an 'install_items'
+	##       line. Without it, anything the initrd loads itself - notably 'zfs' on a ZFS root - comes up
+	##       on default parameters no matter what /etc/modprobe.d says.
+		sudo tkz_rebuild-uki    ## Or just wait for the next kernel update.
+
+	## Note: built-in (non-modular) kernel code such as 'zswap' can never be configured by modprobe.
+	##       '--emit-native' prints the '/etc/kernel/uki-cmdline.conf' line to add instead.
+
+	## Verify at any time - exits non-zero if anything has drifted from the config:
+		tkz_apply-tunables --check
+
+	## Note: '/tmp' needs no boot-time emptying. It is a fresh tmpfs from systemd's 'tmp.mount' every boot,
+	##       and ongoing age-based cleanup belongs in '/etc/tmpfiles.d/' (see 'systemd-tmpfiles'). The old
+	##       script that did this is retired under 'legacy/' - it deleted the '/tmp/systemd-private-*'
+	##       directories of services that were already running.
+
 -->
 
 ### Install or update local scripts
@@ -1284,6 +1413,7 @@ These scripts won't necessarily do much good without following an installation g
 
 ## Document history
 
+- 2026-08-13: Added notes for the encrypted-home auto-mount / logout watchdog (scripts, cron job, PAM hook), and for the boot-time helpers now that they run as systemd units.
 - 2026-06-01: Added section "Install or update local scripts"
 - 2026-03-31: Template put in Git.
 

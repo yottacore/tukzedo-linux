@@ -1,0 +1,8 @@
+## Hourly watchdog: unmounts and locks (unloads ZFS keys for) encrypted ZFS homes of logged-out users.
+## Deployed from the tukzedo-linux repo: filesystem/debian_13/etc/cron.d/tkz_zfs-crypthome-logout-watchdog
+## NOTE: This filename must never contain a dot - cron silently ignores /etc/cron.d files with dots in their names.
+## The script logs to /var/log/tkz_zfs-crypthome_logout-watchdog.log (self-rotating), plus summaries to syslog.
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+17 * * * *	root	/usr/local/sbin/tkz_zfs-crypthome_logout-watchdog --cron
