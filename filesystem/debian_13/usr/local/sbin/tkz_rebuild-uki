@@ -29,7 +29,72 @@
 
 set -euo pipefail
 
-fSyntax() { echo -e "\nUsage: $0 [--all|<specific kernel version #>]\n" >&2; return 1; }
+fSyntax() { echo -e "\nUsage: ${meName} [-h|--help] [--all | <specific kernel version #>]\n" >&2; return 1; }
+
+fShowHelp(){
+	echo "
+Usage: ${meName} [-h|--help] [--all | <specific kernel version #>]
+
+Builds one or more Unified Kernel Images (kernel+initrd+cmdline in a single signed
+.efi) into /boot/efi/EFI/Linux, signs all UKIs and systemd-boot binaries with the
+MOK key, and sets the default boot entry to the second-newest kernel (so the default
+is never too new for the ZFS DKMS modules).
+
+Arguments:
+  (none)                        Rebuild the UKI for the currently running kernel.
+  <specific kernel version #>   Rebuild the UKI for one installed kernel, as named
+                                by its /boot/vmlinuz-<version> suffix,
+                                e.g. '6.12.90+deb13.1-amd64'.
+  --all                         Rebuild UKIs for every kernel found in /boot.
+  -h, --help                    Show this help and exit.
+
+Must be run as root (except for --help). Output is logged to /var/log/${meName}.log.
+Kernel command line is sourced from /etc/kernel/uki-cmdline.conf.
+"
+}
+
+fParseArgs(){
+	## Validate all args up-front - before the root check, logging, and any system
+	## mutation - so a bad invocation fails immediately, not partway through a rebuild.
+	## Populates top-level ${argParse_doAll} and ${argParse_kernelVersion}.
+	local nextArg=""
+	for nextArg in "$@"; do
+		case "${nextArg,,}" in
+			'-h'|'--help')  fShowHelp ; exit 0 ;;
+			'--all')        argParse_doAll=1 ;;
+			'all')
+				echo -e "\nERROR in ${meName}: 'all' is not a kernel version. Did you mean '--all'?" >&2
+				fSyntax
+			;;
+			'-'*)
+				echo -e "\nERROR in ${meName}: Unknown option: '${nextArg}'." >&2
+				fSyntax
+			;;
+			*)
+				if [[ -n "${argParse_kernelVersion}" ]]; then
+					echo -e "\nERROR in ${meName}: Only one kernel version may be specified (got '${argParse_kernelVersion}' and '${nextArg}')." >&2
+					fSyntax
+				fi
+				argParse_kernelVersion="${nextArg}"
+			;;
+		esac
+	done
+	if ((argParse_doAll)) && [[ -n "${argParse_kernelVersion}" ]]; then
+		echo -e "\nERROR in ${meName}: '--all' and a specific kernel version are mutually exclusive." >&2
+		fSyntax
+	fi
+	return 0
+}
+
+fRequireRoot(){
+	## Refuse to run unless we're actually root.
+	## Called before the logging block below, because that block writes to '/var/log' and would
+	## otherwise be the first thing to fail, with a far less obvious error message.
+	((EUID == 0)) && return 0
+	echo -e "\nERROR in ${meName}: Must be run as root (EUID 0), but is running as '$(id -un 2>/dev/null || echo "uid ${EUID}")'."  >&2
+	echo -e "Try: sudo ${mePath} ${*}\n"                                                                                          >&2
+	exit 1
+}
 
 fMain(){
 	## Depending on arg, build one or more UKIs for current, all, or a specified kernel.
@@ -85,22 +150,21 @@ fMain(){
 	fPopulateCheckArrays
 	readonly requiredModules  forbiddenModules  requiredOrForbiddenFilesDirsOrContent
 
-	## Variables
-	local doAll=0
-	local kernelVersion_t3afd=""
+	## Variables (args were parsed and validated up-front by fParseArgs, pre-root-check)
+	local -ri doAll=${argParse_doAll}
+	local kernelVersion_t3afd="${argParse_kernelVersion}"
 
-	# Parse args and check for need to show syntax help
-	for nextArg in "$@"; do
-		case " ${nextArg,,} " in
-			" --all ") doAll=1 ;;
-			" --"*)    fSyntax ;;
-			*)
-				[[ -n "${kernelVersion_t3afd}" ]]  &&  fSyntax
-				kernelVersion_t3afd="${nextArg}"
-			;;
-		esac
-	done
-	{ ((doAll)) && [[ -n "${kernelVersion_t3afd}" ]]; } && fSyntax
+	## If not --all, and no version specified, assume current
+	{ ((! doAll)) && [[ -z "${kernelVersion_t3afd}" ]]; } && kernelVersion_t3afd="$(uname -r)"
+
+	## Fail fast if the requested kernel doesn't exist, before any system state is touched
+	## (fBuild_UKI re-checks, but by then the ZFS cachefile has already been cleared).
+	if ((! doAll)) && [[ ! -f "/boot/vmlinuz-${kernelVersion_t3afd}" ]]; then
+		echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No such kernel: '/boot/vmlinuz-${kernelVersion_t3afd}'. Installed kernels:" >&2
+		ls /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-|    |' | sort -V >&2 || true
+		echo >&2
+		return 1
+	fi
 
 	## Make sure /boot/efi is vfat and mounted.
 	if ! mountpoint -q "${ESP_DIR}" 2>/dev/null; then
@@ -113,9 +177,6 @@ fMain(){
 	fi
 	echo "[ Verified that '${ESP_DIR}' is a mounted vfat filesystem. ]"
 
-	## If not --all, and no version specified, assume current
-	{ ((! doAll)) && [[ -z "${kernelVersion_t3afd}" ]]; } && kernelVersion_t3afd="$(uname -r)"
-
 	if ((require_Root_ZFS)); then
 		echo "[ Clearing ZFS cachefile settings and file, to force scan-based import ... ]"
 		if ((! dryRun)); then
@@ -123,13 +184,19 @@ fMain(){
 			sudo zpool set cachefile=none bpool_t2nsn 2>/dev/null || true
 			[[ -f /etc/zfs/zpool.cache ]] && sudo rm -f /etc/zfs/zpool.cache
 		fi
-		echo "[ Disabling 'boot-efi.mount' service that interferes with post-ZFS /boot/efi mounting ... ]"
-		if ((! dryRun)); then
-			## 'boot-efi.mount' causes /etc/efi to mount too early, and gets shadowed by ZFS /boot.
-			## But don't 'stop' or 'disable' it, the former definitely unmounts /boot/efi thus breaking this script. Just mask it.
-			## 'fPopulateCheckArrays() populates a check to make sure '/etc/fstab' has a line to explicitly mount '/boot/efi', with 'x-systemd.after=zfs-import.target' also set as an argument.
-			sudo systemctl mask boot-efi.mount 2>/dev/null || true
-		fi
+		## NOTE: Do NOT mask 'boot-efi.mount' here. This script used to, on the theory that the
+		## generated unit mounted '/boot/efi' before the ZFS pools were imported, after which the ZFS
+		## '/boot' dataset mounted over the top and shadowed it. That ordering is now handled properly
+		## by 'x-systemd.after=zfs-import.target' on the '/boot/efi' line in '/etc/fstab' - which
+		## fPopulateCheckArrays() already asserts is present - so the mask is obsolete.
+		##
+		## It was also actively harmful, in two ways that both hid well:
+		##   1. It silently re-masked the unit after every kernel upgrade, undoing any manual unmask,
+		##      and leaving 'tkz-insure-efi-mount.service' (which declares After=/Wants=boot-efi.mount)
+		##      to repair the ESP by hand ~15s late on every single boot.
+		##   2. With no systemd unit owning the mount, udisks2 treats the ESP as fair game: on behalf
+		##      of 'fwupd-refresh.service' it would mount and then UNMOUNT '/boot/efi' out from under
+		##      the running system, minutes after the repair had succeeded.
 	fi
 	sleep 1
 
@@ -689,6 +756,15 @@ declare mePath="${0}"
 declare meName="$(basename "${mePath}")"
 declare serialDT="$(date '+%Y%m%d-%H%M%S')"
 
+## Parse and validate args first: '--help' must work unprivileged, and a bad
+## invocation should fail before the root check, logging, and any system mutation.
+declare -i argParse_doAll=0
+declare    argParse_kernelVersion=""
+fParseArgs  "${@}"
+
+## Must be root (checked before the logging block, which writes to '/var/log')
+fRequireRoot  "${@}"
+
 ## Logging
 declare logDir="/var/log"
 declare logFile="${logDir}/${meName}.log"
@@ -724,3 +800,16 @@ echo
 ##			  the numeric sort fell back to lexical order - which selected the OLDEST kernel as default.
 ##			- fSetBootKernelDefaultToLatestMinusOne(): Use sudo when writing to loader.conf, like the
 ##			  rest of the script does for privileged writes.
+##		- 20260813 JC:
+##			- Added fRequireRoot(): fail immediately if not running as root, rather than partway
+##			  through with unrelated-looking errors. Called before the logging block, since that
+##			  writes to '/var/log' and would otherwise fail first.
+##		- 20260814 JC:
+##			- Removed the 'systemctl mask boot-efi.mount' added on 20260314-18. The fstab entry's
+##			  'x-systemd.after=zfs-import.target' supersedes it, and re-masking on every run was
+##			  silently reverting the unmask, forcing a late hand-repair on every boot and letting
+##			  udisks2/fwupd unmount the ESP. See the NOTE in fMain() before reintroducing it.
+##			- Added '-h|--help' (fShowHelp(), works unprivileged), and moved arg parsing to
+##			  fParseArgs(), called before the root check: unknown options, conflicting args, and a
+##			  bare 'all' (with a "did you mean '--all'?" hint) now fail immediately. A nonexistent
+##			  kernel version also fails at the top of fMain(), before the ZFS cachefile is cleared.
