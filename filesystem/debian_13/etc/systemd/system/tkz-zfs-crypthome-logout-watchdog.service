@@ -1,0 +1,23 @@
+##	Lock (unmount + unload key) the encrypted ZFS homes of users who have logged out.
+##	Started every 5 minutes by the matching .timer, and immediately at logout by the pam_exec
+##	close_session line in /etc/pam.d/common-session. Both just 'systemctl start' this unit, so
+##	there is never more than one run at a time: a start while it is already running joins that job.
+
+[Unit]
+Description=Lock encrypted ZFS homes of logged-out users
+Documentation=file:/usr/local/sbin/tkz_zfs-crypthome_logout-watchdog
+After=zfs-mount.service systemd-logind.service
+ConditionFileIsExecutable=/usr/local/sbin/tkz_zfs-crypthome_logout-watchdog
+
+[Service]
+Type=oneshot
+## At the moment PAM closes a session, logind still shows the user as 'closing' and their
+## processes are still winding down. Give that a moment before deciding anything.
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/local/sbin/tkz_zfs-crypthome_logout-watchdog --unattended
+## A wedged run (a child stuck on a busy mount, D state) must not block every later run; the
+## script's flock would otherwise make them all exit early, forever. A oneshot is 'activating'
+## for the whole ExecStart, so the START timeout is the one that ends it: SIGTERM to the whole
+## cgroup, then SIGKILL after TimeoutStopSec. Both together stay under the 5-minute timer period.
+TimeoutStartSec=4min
+TimeoutStopSec=30s

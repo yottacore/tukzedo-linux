@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
+### Changed
+
+- Logout watchdog runs from a systemd timer every 5 minutes, plus a PAM `close_session` hook that locks a home the moment its user logs out. Replaces the hourly cron job; a wedged run is now killed by the unit's start timeout. [20260907]
+
 ### Other work
 -->
 

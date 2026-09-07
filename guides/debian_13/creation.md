@@ -1291,11 +1291,11 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 		sudo chown root:root /usr/local/sbin/tkz_zfs-crypthome_*
 		sudo chmod 755       /usr/local/sbin/tkz_zfs-crypthome_*
 
-	## 3. Install the hourly watchdog cron job.
-	## Note: the filename must not contain a dot - cron silently ignores such files in '/etc/cron.d'.
-		sudo cp etc/cron.d/tkz_zfs-crypthome-logout-watchdog /etc/cron.d/
-		sudo chown root:root /etc/cron.d/tkz_zfs-crypthome-logout-watchdog
-		sudo chmod 644       /etc/cron.d/tkz_zfs-crypthome-logout-watchdog
+	## 3. Install the watchdog timer (runs every 5 minutes as the backstop for the PAM hook in step 4).
+		sudo cp etc/systemd/system/tkz-zfs-crypthome-logout-watchdog.service /etc/systemd/system/
+		sudo cp etc/systemd/system/tkz-zfs-crypthome-logout-watchdog.timer   /etc/systemd/system/
+		sudo systemctl daemon-reload
+		sudo systemctl enable --now tkz-zfs-crypthome-logout-watchdog.timer
 
 	## 4. Hook the login helper into PAM.
 	## Note: do NOT copy the repo's 'etc/pam.d/common-auth' over yours. It is a mirror of one specific host,
@@ -1309,11 +1309,19 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 		sudo nano /etc/pam.d/common-auth
 			## ZFS encrypted home
 			auth    requisite                       pam_exec.so expose_authtok quiet  /usr/local/sbin/tkz_zfs-crypthome_login
+	## Then hook the logout watchdog into session close, so homes lock the moment a session ends. Same
+	## warning: the repo's 'etc/pam.d/common-session' is a one-host snapshot; add only these two lines,
+	## after the 'pam_systemd.so' line. The first one keeps cron and sudo from triggering it.
+		sudo cp /etc/pam.d/common-session "/etc/pam.d/common-session.bak-$(date +%Y%m%d)"
+		sudo nano /etc/pam.d/common-session
+			session [success=1 default=ignore]      pam_succeed_if.so quiet service in cron:sudo:sudo-i:cups:samba
+			session optional                        pam_exec.so quiet type=close_session /usr/bin/systemctl start --no-block tkz-zfs-crypthome-logout-watchdog.service
 
 	## 5. Verify, from a shell you can keep open. (Read-only unless something actually needs mounting.)
 		sudo PAM_USER="${USER}" tkz_zfs-crypthome_login </dev/null  &&  echo OK
 		sudo tkz_zfs-crypthome_logout-watchdog
-		journalctl -t tkz_zfs-crypthome_login -t tkz_zfs-crypthome_logout-watchdog -n 50
+		systemctl list-timers tkz-zfs-crypthome-logout-watchdog.timer
+		journalctl -t tkz_zfs-crypthome_login -t tkz_zfs-crypthome_logout-watchdog -u tkz-zfs-crypthome-logout-watchdog -n 50
 
 	## Both scripts carry full usage, troubleshooting, and lockout-recovery notes in their own file headers.
 
@@ -1413,6 +1421,7 @@ These scripts won't necessarily do much good without following an installation g
 
 ## Document history
 
+- 2026-09-07: Logout watchdog: hourly cron job replaced by a systemd timer (5 minutes) plus a PAM close_session hook.
 - 2026-08-13: Added notes for the encrypted-home auto-mount / logout watchdog (scripts, cron job, PAM hook), and for the boot-time helpers now that they run as systemd units.
 - 2026-06-01: Added section "Install or update local scripts"
 - 2026-03-31: Template put in Git.
