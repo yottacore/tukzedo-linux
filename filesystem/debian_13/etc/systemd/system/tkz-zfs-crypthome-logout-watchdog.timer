@@ -1,0 +1,13 @@
+##	Backstop for the PAM close_session hook: catches homes left mounted when a logout never
+##	went through PAM (crashed session, killed display manager, hook missing).
+
+[Unit]
+Description=Lock encrypted ZFS homes of logged-out users, every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=1min
+Unit=tkz-zfs-crypthome-logout-watchdog.service
+
+[Install]
+WantedBy=timers.target

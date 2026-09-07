@@ -2,7 +2,7 @@
 #  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
 
 ##	Purpose:
-##		- Cron-driven watchdog, the logout-side counterpart of 'tkz_zfs-crypthome_login':
+##		- Logout-side counterpart of 'tkz_zfs-crypthome_login', run by a systemd timer and a PAM hook:
 ##		  For every user who has an encrypted ZFS home (marked by the '<custProp_UserName>' ZFS property),
 ##		  if that user is fully logged out but their datasets are still mounted (or their key still loaded):
 ##			1. Terminate whatever session remnants/processes still hold files open under their home.
@@ -13,10 +13,14 @@
 ##			   as a last resort.
 ##			3. Unload the ZFS encryption key, so the data is actually at rest.
 ##	Instructions:
-##		- Deploy the companion cron file (in this repo at 'filesystem/debian_13/etc/cron.d/') to:
-##			/etc/cron.d/tkz_zfs-crypthome-logout-watchdog
-##		  which runs this hourly as root. (No 'crontab -e' needed; do NOT add a dot to that filename -
-##		  cron ignores /etc/cron.d files whose names contain dots.)
+##		- Deploy the two units from this repo's 'filesystem/debian_13/etc/systemd/system/':
+##			tkz-zfs-crypthome-logout-watchdog.service and .timer
+##		  then: systemctl daemon-reload && systemctl enable --now tkz-zfs-crypthome-logout-watchdog.timer
+##		  The timer runs this every 5 minutes as the backstop.
+##		- For an immediate lock at logout, add to /etc/pam.d/common-session, after the pam_systemd.so line:
+##			session optional pam_exec.so quiet type=close_session /usr/bin/systemctl start --no-block tkz-zfs-crypthome-logout-watchdog.service
+##		  The repo's 'etc/pam.d/common-session' shows the pam_succeed_if line that keeps cron and sudo
+##		  (which open and close PAM sessions constantly) from triggering it. Copy the lines, not the file.
 ##		- Manual run (auto-elevates via sudo): tkz_zfs-crypthome_logout-watchdog [--dry-run]
 ##	Notes:
 ##		- Single-instance: holds an flock on a /dev/shm lock file. A second invocation exits immediately.
@@ -28,6 +32,8 @@
 ##		  linger is an explicit request to keep that user's services running while logged out.
 ##		- Everything is logged to '${logFile}' (see below), plus summaries to syslog:
 ##			journalctl -t tkz_zfs-crypthome_logout-watchdog
+##		  In --unattended mode a pass that found nothing to do writes nothing; at every 5 minutes the
+##		  log would otherwise be all noise. The unit's own journal entries still show that it ran.
 ##	Copyright and license ...: Toward bottom of this file.
 ##	History .................: At bottom of this file.
 
@@ -194,6 +200,7 @@ function fProcessUser(){
 
 	if ! getent passwd "${userName}" &>/dev/null; then
 		fLog "⚠️  FYI: '${custProp_UserName}=${userName}' on '${rootDataset}', but no such user account exists. Skipping."
+		isNoteworthy=1
 		return 0
 	fi
 
@@ -222,6 +229,7 @@ function fProcessUser(){
 		fLog "✔️ Nothing to do: no datasets mounted under '${rootDataset}', and key is not loaded."
 		return 0
 	fi
+	isNoteworthy=1
 	fLog "•  Mounted datasets (${#mountedDatasets[@]}): ${mountedDatasets[*]:-none}"
 	[[ -n "${encryptionRoot}" ]]  &&  fLog "•  Key status of '${encryptionRoot}': ${keyStatus}"
 
@@ -322,7 +330,7 @@ function fProcessUser(){
 
 function fMain(){
 
-	## Since this runs from cron, append basic paths in case none are set.
+	## Runs from systemd with a minimal environment; make sure the basics are in PATH.
 	export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	cd /  ## So this process itself can never be a mountpoint holder.
 
@@ -330,9 +338,9 @@ function fMain(){
 	local nextArg=""
 	for nextArg in "$@"; do
 		case "${nextArg,,}" in
-			"--cron")    isCron=1 ;;
-			"--dry-run") isDryRun=1 ;;
-			*) echo -e "\nUsage: ${meName} [--cron] [--dry-run]\n\t--cron ....: Log only to '${logFile}' (no stdout); used by /etc/cron.d.\n\t--dry-run .: Report what would be done, change nothing.\n" >&2; return 1 ;;
+			"--unattended"|"--cron") isUnattended=1 ;;  ## '--cron' is the old spelling.
+			"--dry-run")             isDryRun=1 ;;
+			*) echo -e "\nUsage: ${meName} [--unattended] [--dry-run]\n\t--unattended : No stdout; log to '${logFile}' only when something happened. Used by the systemd unit.\n\t--dry-run .. : Report what would be done, change nothing.\n" >&2; return 1 ;;
 		esac
 	done
 
@@ -350,12 +358,14 @@ function fMain(){
 		return 0
 	fi
 
-	## Logging: everything below goes to ${logFile}; also to stdout unless --cron. Self-rotates.
+	## Logging. Interactive: stdout plus ${logFile} (self-rotating). Unattended: buffer the pass, and
+	## keep it only if something happened or the run failed (see the flush after fMain).
 	if [[ -f "${logFile}" && "$(stat -c %s "${logFile}" 2>/dev/null || echo 0)" -gt "${logRotateAtBytes}" ]]; then
 		mv -f "${logFile}" "${logFile}.1"
 	fi
-	if ((isCron)); then
-		exec >>"${logFile}" 2>&1
+	if ((isUnattended)); then
+		logBuffer="$(mktemp "/dev/shm/${meName}.XXXXXX")"
+		exec >>"${logBuffer}" 2>&1
 	else
 		exec > >(tee -a "${logFile}") 2>&1
 	fi
@@ -382,6 +392,7 @@ function fMain(){
 		[[ -z "${nextDataset}" || -z "${nextUserName}" ]]  &&  continue
 		if [[ "${nextUserName}" == "root" ]]; then
 			fLog "⚠️  FYI: refusing on principle to ever watchdog user 'root' ('${nextDataset}'). Skipping."
+			isNoteworthy=1
 			continue
 		fi
 		if [[ -v "rootDatasetForUser[${nextUserName}]" ]]; then
@@ -389,6 +400,7 @@ function fMain(){
 				continue  ## Child of the already-recorded top-level dataset.
 			fi
 			fLog "⚠️  FYI: user '${nextUserName}' has multiple unrelated datasets marked ('${rootDatasetForUser[${nextUserName}]}' and '${nextDataset}'); only handling the first."
+			isNoteworthy=1
 			continue
 		fi
 		rootDatasetForUser["${nextUserName}"]="${nextDataset}"
@@ -414,10 +426,20 @@ function fMain(){
 
 
 ## File-scope flags (set in fMain's arg parsing; declared here so all functions can see them).
-declare -i isCron=0
+declare -i isUnattended=0
 declare -i isDryRun=0
+declare -i isNoteworthy=0  ## Unattended passes reach the log file only when set, or when the run failed.
+declare    logBuffer=""
 
-fMain "$@"
+declare -i exitCode=0
+fMain "$@"  ||  exitCode=$?
+if [[ -n "${logBuffer}" ]]; then
+	if (( isNoteworthy || exitCode )); then
+		cat "${logBuffer}" >> "${logFile}"  ||  true
+	fi
+	rm -f "${logBuffer}"
+fi
+exit "${exitCode}"
 
 
 ##	History:
@@ -451,3 +473,8 @@ fMain "$@"
 ##			  testing a literal string; username derived by grepping all of /etc/passwd for a substring.
 ##			- Self-rotating log at '/var/log/<name>.log' (+ .1), plus summaries to syslog.
 ##			- Added --dry-run mode; 'set -euo pipefail' throughout.
+##		- 20260907: Runs from a systemd timer every 5 minutes plus a PAM close_session hook, not hourly cron.
+##			- '--cron' renamed '--unattended' (old spelling still accepted). Unattended passes that found
+##			  nothing to do no longer write to the log file.
+##			- The unit's start timeout kills a wedged run, whole cgroup, so the flock can never block later
+##			  runs. Companion cron file removed from the repo.
