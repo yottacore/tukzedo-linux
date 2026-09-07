@@ -200,6 +200,13 @@ function fIsModuleBuiltIn(){
 ##	Applying.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
+function fSquashSpaces(){
+	## Multi-value sysctls (kernel.printk) read back tab-separated; compare on words, not bytes.
+	local words=( $1 )
+	echo "${words[*]}"
+}
+
+
 function fApplyToFile(){
 	## Sets the single-value pseudo-file $1 to $2, reporting was → now. $3 is a human label for logs.
 	local -r targetFile="$1"
@@ -213,7 +220,7 @@ function fApplyToFile(){
 
 	local -r oldValue="$(cat "${targetFile}" 2>/dev/null || true)"
 
-	if [[ "${oldValue}" == "${wantValue}" ]]; then
+	if [[ "$(fSquashSpaces "${oldValue}")" == "$(fSquashSpaces "${wantValue}")" ]]; then
 		countAlready=$((countAlready + 1))
 		fLogQuiet "${label} = '${wantValue}' (already)"
 		return 0
@@ -233,7 +240,7 @@ function fApplyToFile(){
 	echo "${wantValue}" > "${targetFile}" 2>/dev/null  ||  true
 	local -r newValue="$(cat "${targetFile}" 2>/dev/null || true)"
 
-	if [[ "${newValue}" == "${wantValue}" ]]; then
+	if [[ "$(fSquashSpaces "${newValue}")" == "$(fSquashSpaces "${wantValue}")" ]]; then
 		countChanged=$((countChanged + 1))
 		fLog "${label}: '${oldValue}' → '${newValue}'"
 	else
@@ -283,15 +290,17 @@ function fGetSchedulerClassFor(){
 function fGetConfiguredScheduler(){
 	## Echoes the scheduler configured for class $1 in the '[block]' section, or nothing.
 	local -r wantClass="${1,,}"
-	local nextKey="" nextValue="" lineClass=""
+	local nextKey="" nextValue="" lineClass="" found=""
+	## Read the whole section rather than returning on the first hit; an early return leaves
+	## fReadSection writing into a closed pipe, and bash complains once per device.
 	while IFS=$'\t' read -r nextKey nextValue; do
 		## '[block]' lines look like:  <class>  scheduler = <value>
 		lineClass="${nextKey%%[[:space:]]*}"
 		[[ "${lineClass,,}" != "${wantClass}" ]]  &&  continue
 		[[ "${nextKey,,}" != *"scheduler" ]]      &&  continue
-		echo "${nextValue}"
-		return 0
+		[[ -z "${found}" ]]  &&  found="${nextValue}"
 	done < <(fReadSection "block")
+	echo "${found}"
 }
 
 
