@@ -1283,19 +1283,28 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 		sudo zfs set canmount=noauto                    "rpool_${mUID}/deb/persist/home/${USER}"
 		sudo zfs set x9.custom.automount:user="${USER}" "rpool_${mUID}/deb/persist/home/${USER}"
 
-	## 2. Install the login helper and the logout watchdog.
-	## Note: the login helper's shebang MUST stay '#!/bin/bash -p'. Without '-p', bash silently drops euid
-	##       root under setuid services like 'su', and 'zfs load-key' / 'zfs mount' then fail.
+	## 2. Install the mount helper, the login helper, and the logout watchdog.
+	## Note: the login and mount helpers' shebang MUST stay '#!/bin/bash -p'. Without '-p', bash silently
+	##       drops euid root under setuid services like 'su', and 'zfs load-key' / 'zfs mount' then fail.
+	## The mount helper does the actual mounting for the login helper: parents first, anything already in a
+	## mountpoint dir moved to a quarantine folder next to it (never deleted), every mountpoint dir left
+	## empty and 'chattr +i', each dataset verified. Its '--audit-all' mode applies the same rule to every
+	## mountpoint on the box, ZFS or not.
+		sudo cp usr/local/sbin/tkz_zfs-mount                      /usr/local/sbin/
 		sudo cp usr/local/sbin/tkz_zfs-crypthome_login            /usr/local/sbin/
 		sudo cp usr/local/sbin/tkz_zfs-crypthome_logout-watchdog  /usr/local/sbin/
-		sudo chown root:root /usr/local/sbin/tkz_zfs-crypthome_*
-		sudo chmod 755       /usr/local/sbin/tkz_zfs-crypthome_*
+		sudo chown root:root /usr/local/sbin/tkz_zfs-mount /usr/local/sbin/tkz_zfs-crypthome_*
+		sudo chmod 755       /usr/local/sbin/tkz_zfs-mount /usr/local/sbin/tkz_zfs-crypthome_*
 
-	## 3. Install the watchdog timer (runs every 5 minutes as the backstop for the PAM hook in step 4).
+	## 3. Install the watchdog timer (runs every 5 minutes as the backstop for the PAM hook in step 4), and
+	##    the boot-time mountpoint audit. Run the audit once by hand first, dry, and read what it would move.
 		sudo cp etc/systemd/system/tkz-zfs-crypthome-logout-watchdog.service /etc/systemd/system/
 		sudo cp etc/systemd/system/tkz-zfs-crypthome-logout-watchdog.timer   /etc/systemd/system/
+		sudo cp etc/systemd/system/tkz-zfs-mount-audit.service               /etc/systemd/system/
 		sudo systemctl daemon-reload
 		sudo systemctl enable --now tkz-zfs-crypthome-logout-watchdog.timer
+		sudo tkz_zfs-mount --audit-all --dry-run
+		sudo systemctl enable --now tkz-zfs-mount-audit.service
 
 	## 4. Hook the login helper into PAM.
 	## Note: do NOT copy the repo's 'etc/pam.d/common-auth' over yours. It is a mirror of one specific host,
@@ -1321,9 +1330,11 @@ View the HTML comments below in the raw .md document. (They are in pseudo-bash f
 		sudo PAM_USER="${USER}" tkz_zfs-crypthome_login </dev/null  &&  echo OK
 		sudo tkz_zfs-crypthome_logout-watchdog
 		systemctl list-timers tkz-zfs-crypthome-logout-watchdog.timer
-		journalctl -t tkz_zfs-crypthome_login -t tkz_zfs-crypthome_logout-watchdog -u tkz-zfs-crypthome-logout-watchdog -n 50
+		sudo tkz_zfs-mount --audit-all --verbose  ## Quiet second run means every mountpoint dir is empty and immutable.
+		journalctl -t tkz_zfs-crypthome_login -t tkz_zfs-crypthome_logout-watchdog -t tkz_zfs-mount -u tkz-zfs-crypthome-logout-watchdog -u tkz-zfs-mount-audit -n 50
 
-	## Both scripts carry full usage, troubleshooting, and lockout-recovery notes in their own file headers.
+	## All three scripts carry full usage, troubleshooting, and lockout-recovery notes in their own file headers.
+	## To rename or remove a mountpoint dir later: 'sudo tkz_zfs-mount --release <dir>' takes the flag off.
 
 
 ##
@@ -1421,7 +1432,7 @@ These scripts won't necessarily do much good without following an installation g
 
 ## Document history
 
-- 2026-09-07: Logout watchdog: hourly cron job replaced by a systemd timer (5 minutes) plus a PAM close_session hook.
+- 2026-09-07: Logout watchdog: hourly cron job replaced by a systemd timer (5 minutes) plus a PAM close_session hook. Added tkz_zfs-mount (mount helper, immutable mountpoint dirs) and its boot-time audit unit.
 - 2026-08-13: Added notes for the encrypted-home auto-mount / logout watchdog (scripts, cron job, PAM hook), and for the boot-time helpers now that they run as systemd units.
 - 2026-06-01: Added section "Install or update local scripts"
 - 2026-03-31: Template put in Git.

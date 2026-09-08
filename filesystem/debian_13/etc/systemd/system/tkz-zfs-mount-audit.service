@@ -1,0 +1,20 @@
+##	Once per boot, after the stock ZFS and fstab mounts are up: check that every mountpoint dir on the
+##	box is empty and immutable, mount any canmount=on dataset the stock path missed, and move anything
+##	hidden under a live mount into a quarantine folder next to it. Quiet when there is nothing to do.
+##	Runs before user sessions open, so a login's own mount pass (tkz_zfs-crypthome_login) finds the
+##	system already in order. Ordering only; a failure here never blocks logins.
+
+[Unit]
+Description=Check and lock down ZFS and other mountpoint dirs
+Documentation=file:/usr/local/sbin/tkz_zfs-mount
+After=zfs-mount.service local-fs.target
+Before=systemd-user-sessions.service display-manager.service
+ConditionFileIsExecutable=/usr/local/sbin/tkz_zfs-mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tkz_zfs-mount --audit-all
+TimeoutStartSec=2min
+
+[Install]
+WantedBy=multi-user.target

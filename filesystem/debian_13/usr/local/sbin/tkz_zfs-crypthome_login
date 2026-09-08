@@ -11,9 +11,10 @@
 ##		- Mounts a user's encrypted ZFS home dataset - and ALL of its child datasets - via PAM at login.
 ##		- If ANY dataset in the user's tree fails to mount, exits non-zero, so that PAM (when configured with
 ##		  'requisite' as below) refuses the login rather than dropping the user into a broken/empty home.
-##		- Anything already sitting inside a not-yet-mounted mountpoint (which would block or shadow the real
-##		  contents) is safely moved aside - NEVER deleted - into a '.tkz_premount-quarantine' folder next to
-##		  the mountpoint, and mounting then proceeds.
+##		- The mounting itself is done by tkz_zfs-mount, which moves anything already sitting inside a
+##		  not-yet-mounted mountpoint aside (never deleted) into a '.tkz_premount-quarantine' folder next to
+##		  it, leaves every mountpoint dir empty and immutable, mounts, and verifies. Without that helper this
+##		  script falls back to plain 'zfs mount', so a missing helper never blocks logins.
 ##	Requirements - ZFS properties on the user's top-level home dataset:
 ##		canmount=noauto
 ##		x9.custom.automount:user=<username>  ## The username that PAM will pass in $PAM_USER.
@@ -59,8 +60,8 @@ declare -r custProp_Mountpoint="x9.custom.automount:dir"  ## Only consulted when
 ## (Only meaningful if this file itself lives on an encrypted filesystem that is locked when offline.)
 declare -r pwdLongSaltFile="/etc/cryptkeys/zfs_pam_longsalt_${HOSTNAME}.txt"
 
-## Where pre-existing mountpoint contents get moved (never deleted): '<parent of mountpoint>/<this>/<mountpoint basename>_<timestamp>/'.
-declare -r quarantineDirName=".tkz_premount-quarantine"
+## Does the actual mounting: quarantine, immutable mountpoint dirs, mount, verify. See its header.
+declare -r mountHelper="/usr/local/sbin/tkz_zfs-mount"
 
 
 function fLog(){
@@ -97,36 +98,6 @@ function fGetMountpointFor(){
 }
 
 
-function fQuarantinePremountContents(){
-	## If the (not-yet-mounted) mountpoint dir $1 has anything in it, move it ALL - files, folders, hidden
-	## entries - into a timestamped quarantine folder next to the mountpoint. Never deletes anything.
-	## Returns non-zero if the mountpoint could not be emptied.
-	local -r mountLocation="$1"
-
-	[[ -d "${mountLocation}" ]]  ||  return 0  ## 'zfs mount' will create it.
-
-	local -a entries=()
-	readarray -d '' -t entries < <(find "${mountLocation}" -mindepth 1 -maxdepth 1 -print0 2>/dev/null || true)
-	[[ "${#entries[@]}" -eq 0 ]]  &&  return 0
-
-	local -r quarantineBase="$(dirname "${mountLocation}")/${quarantineDirName}"
-	mkdir -p "${quarantineBase}"
-	chmod 700 "${quarantineBase}"
-	local -r quarantineDir="$(mktemp -d "${quarantineBase}/$(basename "${mountLocation}")_$(date "+%Y%m%d-%H%M%S")_XXXX")"
-
-	fLog "⚠️  Mountpoint '${mountLocation}' is not empty (${#entries[@]} entries); moving them (NOT deleting) to '${quarantineDir}' ..."
-	mv -- "${entries[@]}" "${quarantineDir}/"
-
-	## Verify it is now actually empty.
-	if [[ -n "$(find "${mountLocation}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
-		fLogError "In ${meName}.${FUNCNAME[0]}(): '${mountLocation}' is STILL not empty after quarantining its contents."
-		return 1
-	fi
-	fLog "✔️ Quarantined pre-mount contents of '${mountLocation}' to '${quarantineDir}'."
-	return 0
-}
-
-
 function fMain(){
 
 	## Since this runs from PAM (and possibly cron/services), append basic paths in case none are set.
@@ -153,7 +124,7 @@ function fMain(){
 
 	## Fail loudly (blocking login, if 'requisite') if a hard dependency is missing.
 	local dep=""
-	for dep in awk date find mktemp mv zfs; do
+	for dep in awk find zfs; do
 		if ! command -v "${dep}" &>/dev/null; then
 			fLogError "In ${meName}.${FUNCNAME[0]}(): Dependency not installed: '${dep}'."
 			return 1
@@ -224,59 +195,33 @@ function fMain(){
 	fi
 	userPwd=""
 
-	## Mount the whole tree, parents first ('zfs list -r' outputs hierarchy order), quarantining any
-	## pre-existing mountpoint contents along the way. EVERY dataset must end up mounted (or be canmount=off).
-	local -a treeLines=()
-	readarray -t treeLines < <(zfs list -r -H -t filesystem -o name,canmount "${rootDataset}")
+	## Mount the whole tree through tkz_zfs-mount: parents first, stray mountpoint contents quarantined
+	## (never deleted), each mountpoint dir left empty and immutable, each dataset verified. If the helper
+	## is missing, fall back to plain 'zfs mount' so a lost helper cannot lock everyone out.
+	if [[ -x "${mountHelper}" ]]; then
+		"${mountHelper}" "${rootDataset}"  ||  fLogError "'${mountHelper}' reported failure for '${rootDataset}'."
+	else
+		fLogError "'${mountHelper}' is missing; mounting without it (no quarantine, no immutable mountpoints)."
+		zfs list -r -H -t filesystem -o name,canmount "${rootDataset}" | while IFS=$'\t' read -r nextDataset nextCanmount; do
+			[[ "${nextCanmount}" == "off" ]]  &&  continue
+			[[ "$(fGetZfsProp "${nextDataset}" mounted)" == "yes" ]]  &&  continue
+			fLog "[ Mounting '${nextDataset}' ... ]"
+			zfs mount "${nextDataset}"  ||  true
+		done
+	fi
+
+	## Verify every dataset in the tree (canmount != off) is now mounted, whichever path did the work.
 	local -a failedDatasets=()
 	local -i mountedCount=0
-	local nextLine=""  nextCanmount=""  nextMountLocation=""
-	for nextLine in "${treeLines[@]}"; do
-		nextDataset="${nextLine%%$'\t'*}"
-		nextCanmount="${nextLine##*$'\t'}"
-
-		if [[ "${nextCanmount}" == "off" ]]; then
-			fLog "•  Skipping '${nextDataset}' (canmount=off)."
-			continue
-		fi
-
+	local nextCanmount=""
+	while IFS=$'\t' read -r nextDataset nextCanmount; do
+		[[ "${nextCanmount}" == "off" ]]  &&  continue
 		if [[ "$(fGetZfsProp "${nextDataset}" mounted)" == "yes" ]]; then
-			fLog "✔️ Already mounted: '${nextDataset}'."
-			mountedCount+=1
-			continue
-		fi
-
-		## Reads (zfs get/list) work unprivileged, but from here on we need root. Normally guaranteed by
-		## the shebang's '-p' (see top); this only trips for unprivileged PAM stacks (e.g. a user-space
-		## screen locker) AND something actually needing mounting - in which case failing is correct.
-		if [[ "${EUID}" -ne 0 ]]; then
-			fLogError "In ${meName}.${FUNCNAME[0]}(): '${nextDataset}' needs mounting but this process has euid=${EUID} (not root), so it cannot. (If this happened via su/sudo, check that the shebang still says '#!/bin/bash -p'.)"
-			failedDatasets+=("${nextDataset}")
-			continue
-		fi
-
-		nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
-		if [[ -z "${nextMountLocation}" ]]; then
-			fLogError "Cannot determine mountpoint for '${nextDataset}'."
-			failedDatasets+=("${nextDataset}")
-			continue
-		fi
-
-		if ! fQuarantinePremountContents "${nextMountLocation}"; then
-			failedDatasets+=("${nextDataset}")
-			continue
-		fi
-
-		fLog "[ Mounting '${nextDataset}' at '${nextMountLocation}' ... ]"
-		zfs mount "${nextDataset}"  ||  true
-		if [[ "$(fGetZfsProp "${nextDataset}" mounted)" == "yes" ]]; then
-			fLog "✔️ Mounted '${nextDataset}'."
 			mountedCount+=1
 		else
-			fLogError "Failed to mount '${nextDataset}' at '${nextMountLocation}'."
 			failedDatasets+=("${nextDataset}")
 		fi
-	done
+	done < <(zfs list -r -H -t filesystem -o name,canmount "${rootDataset}")
 
 	## THE gate: every dataset in the user's tree must have mounted, or the login is refused.
 	if [[ "${#failedDatasets[@]}" -gt 0 ]]; then
@@ -328,6 +273,9 @@ fMain "$@"
 ##			- Copied original to v2, to add salt feature, and refactor in the future.
 ##			- Append contents of /etc/cryptkeys/zfs_pam_longsalt_${HOSTNAME}.txt to password, if file exists.
 ##			- Proceed even if there are folders in underlying mount location; just not if no files.
+##		- 20260907 JC: Mount loop and quarantine moved out into tkz_zfs-mount, which also makes every
+##		  mountpoint dir immutable. This script now just calls it and verifies the tree; plain 'zfs mount'
+##		  fallback if the helper is missing.
 ##		- 20260812: Full rewrite.
 ##			- Replaced the one big piped dataset-discovery command (and its 'datamash' dependency) with a
 ##			  simple readable loop over `zfs get -s local`.
