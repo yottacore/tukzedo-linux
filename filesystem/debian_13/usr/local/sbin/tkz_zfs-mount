@@ -1,0 +1,484 @@
+#!/bin/bash -p
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+
+##	The '-p' in the shebang matters: tkz_zfs-crypthome_login execs this from setuid PAM services (su),
+##	where plain bash would drop euid root and every mount/chattr below would fail. See that script's header.
+
+##	Purpose:
+##		Mount a ZFS dataset tree the safe way, and keep every mountpoint dir on this box empty and immutable.
+##		A mountpoint dir with 'chattr +i' cannot collect stray files while nothing is mounted on it, so a
+##		half-finished unmount, a failed mount, or a program that writes before the mount is up cannot
+##		leak data into the parent filesystem (or hide it under the mount later; 'overlay=on' is the default).
+##	Modes:
+##		tkz_zfs-mount [--dry-run] [--no-recurse] <dataset>
+##			For the dataset and each child (parents first): skip canmount=off and mountpoint=none; if already
+##			mounted, check the raw dir under the mount; else create the dir if missing, move any contents to a
+##			quarantine folder next to it (never deletes), set +i, 'zfs mount', verify. Exits non-zero if any
+##			dataset that should have mounted did not. Called by tkz_zfs-crypthome_login.
+##		tkz_zfs-mount --audit [--dry-run] [pool ...]
+##			Same checks over every dataset of the given pools (default: all). Mounted datasets get their raw
+##			dir checked and flagged. Unmounted canmount=on datasets get mounted. Unmounted noauto datasets are
+##			left alone; their dir gets flagged if it exists and is empty, and a warning if it is not.
+##		tkz_zfs-mount --audit-all [--dry-run]
+##			'--audit', then the same raw-dir check for every other mountpoint findmnt knows about (btrfs
+##			subvolumes, fstab binds, tmpfs, cifs ...). Skips pseudo filesystems and paths under /run, /proc,
+##			/sys, /dev, and container dirs. Only touches dirs whose holding filesystem supports chattr.
+##			This is what tkz-zfs-mount-audit.service runs at boot.
+##		tkz_zfs-mount --release [--dry-run] <mountpoint-dir>
+##			Remove +i from a mountpoint dir, mounted or not, so it can be renamed or removed.
+##	How the raw dir is reached under a live mount:
+##		A non-recursive 'mount --bind' of the filesystem that holds the mountpoint shows that filesystem's own
+##		contents with nothing mounted on top. The mountpoint dir, and anything hidden in it, is then visible at
+##		the same relative path inside the bind. Works for any nesting depth; every mountpoint has exactly one
+##		holding filesystem.
+##	Notes:
+##		- The +i flag lives in the holding filesystem, so it travels with snapshots and 'zfs send' of the parent.
+##		  'zfs rename', a mountpoint change, or 'zfs destroy' leaves an immutable empty dir behind; use
+##		  '--release' before removing it.
+##		- Hidden content under a live mount is unreachable anyway, so audit moves it to quarantine. Visible
+##		  content in an unmounted noauto dir is only reported.
+##		- All runs serialize on one lock, so the boot audit and a login never work on the same dir at once.
+##		- Everything important also goes to syslog: journalctl -t tkz_zfs-mount
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+##	Copyright (c) 2026 Jim Collier
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+
+
+set -euo pipefail
+
+declare -r meName="$(basename "${0}")"
+declare -r lockFile="/run/lock/${meName}.lock"
+
+## Same property and folder names as tkz_zfs-crypthome_login; keep them in step.
+declare -r custProp_Mountpoint="x9.custom.automount:dir"  ## Only consulted when 'mountpoint' is 'legacy'.
+declare -r quarantineDirName=".tkz_premount-quarantine"
+
+## Filesystems whose dirs can carry the immutable flag. Anything else (cifs, vfat, tmpfs holding fs) is skipped.
+declare -r flaggableFsTypes=" zfs btrfs ext4 ext3 ext2 xfs f2fs "
+## Mount types that are never real data mounts.
+declare -r pseudoFsTypes=" proc sysfs devtmpfs devpts cgroup cgroup2 securityfs pstore efivarfs bpf debugfs tracefs configfs fusectl mqueue hugetlbfs binfmt_misc autofs rpc_pipefs nsfs overlay squashfs fuse.gvfsd-fuse fuse.portal "
+## Mountpoints under these are runtime-managed and get removed by their owners; an immutable dir there breaks that.
+declare -a skipPrefixes=( /run /proc /sys /dev /var/lib/docker /var/lib/containers /snap )
+
+
+function fLog(){
+	echo -e "$*"
+	command -v logger &>/dev/null  &&  logger -t "${meName}" -- "$*" || true
+}
+
+function fLogWarn(){
+	echo -e "WARNING: $*" >&2
+	command -v logger &>/dev/null  &&  logger -p user.warning -t "${meName}" -- "WARNING: $*" || true
+}
+
+function fLogError(){
+	echo -e "ERROR: $*" >&2
+	command -v logger &>/dev/null  &&  logger -p user.err -t "${meName}" -- "ERROR: $*" || true
+}
+
+function fUsage(){
+	sed -n '/^##\tModes:/,/^##\tHow the raw dir/p' "${0}" | sed '$d' | cut -c3-
+	exit "${1:-1}"
+}
+
+
+function fGetZfsProp(){
+	zfs get -H -o value "${2}" "${1}" 2>/dev/null || true
+}
+
+function fGetMountpointFor(){
+	## Echoes the effective mountpoint for dataset $1, or nothing for none/legacy-without-override.
+	local mountLocation="$(fGetZfsProp "${1}" mountpoint)"
+	if [[ "${mountLocation,,}" == "legacy" ]]; then
+		mountLocation="$(fGetZfsProp "${1}" "${custProp_Mountpoint}")"
+	fi
+	case "${mountLocation}" in
+		"-"|"none"|"legacy") mountLocation="" ;;
+	esac
+	echo "${mountLocation}"
+}
+
+function fIsImmutable(){
+	## $1: dir. True if the immutable flag is set.
+	local flags="$(lsattr -d -- "${1}" 2>/dev/null | awk '{print $1}')"
+	[[ "${flags}" == *i* ]]
+}
+
+function fIsEmptyDir(){
+	[[ -z "$(find "${1}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]
+}
+
+function fHoldingFsType(){
+	## Echoes the fstype of the filesystem that contains path $1 (the path itself may be a mountpoint; use its parent).
+	findmnt -n -o FSTYPE -T "${1}" 2>/dev/null | tail -n1 || true
+}
+
+function fHoldingFsTarget(){
+	findmnt -n -o TARGET -T "${1}" 2>/dev/null | tail -n1 || true
+}
+
+function fIsMountpoint(){
+	mountpoint -q -- "${1}" 2>/dev/null
+}
+
+
+function fQuarantineContents(){
+	## Move everything in dir $1 (files, folders, hidden entries) into a timestamped folder next to it.
+	## Never deletes. Returns non-zero if the dir could not be emptied.
+	local -r rawDir="$1"  shown="${rawShown:-$1}"
+	local shownBase="$(dirname "${shown}")/${quarantineDirName}"; shownBase="${shownBase#/}"; shownBase="/${shownBase}"
+	local -a entries=()
+	readarray -d '' -t entries < <(find "${rawDir}" -mindepth 1 -maxdepth 1 -print0 2>/dev/null || true)
+	[[ "${#entries[@]}" -eq 0 ]]  &&  return 0
+
+	local -r quarantineBase="$(dirname "${rawDir}")/${quarantineDirName}"
+	local -r quarantineDir="${quarantineBase}/$(basename "${rawDir}")_$(date "+%Y%m%d-%H%M%S")"
+	if (( isDryRun )); then
+		fLog "*  DRY RUN: would move ${#entries[@]} entries out of '${shown}' into '$(dirname "${shown}")/${quarantineDirName}/'."
+		return 0
+	fi
+
+	fLogWarn "'${shown}' is not empty (${#entries[@]} entries); moving them (not deleting) to '${shownBase}/$(basename "${quarantineDir}")' ..."
+	mkdir -p "${quarantineBase}"
+	chmod 700 "${quarantineBase}"
+	mkdir "${quarantineDir}"
+	## A wrongly-flagged non-empty dir refuses the mv until the flag comes off.
+	fIsImmutable "${rawDir}"  &&  chattr -i -- "${rawDir}"
+	mv -- "${entries[@]}" "${quarantineDir}/"
+	if ! fIsEmptyDir "${rawDir}"; then
+		fLogError "'${shown}' is still not empty after quarantining its contents."
+		return 1
+	fi
+	fLog "OK Quarantined contents of '${shown}'."
+	return 0
+}
+
+
+function fSecureRawDir(){
+	## $1: a raw mountpoint dir, reachable (not covered by a mount). Make it empty and immutable.
+	## $2: "quarantine" to move contents out, "report" to only warn about them.
+	## Returns non-zero if it could not be made empty, or if the holding filesystem cannot carry the flag.
+	local -r rawDir="$1"  onContents="${2:-quarantine}"  shown="${rawShown:-$1}"
+	local -r fsType="$(fHoldingFsType "${rawDir}")"
+	if [[ "${flaggableFsTypes}" != *" ${fsType} "* ]]; then
+		fLog "*  Skipping '${shown}': holding filesystem is '${fsType:-unknown}', which cannot carry the immutable flag."
+		return 0
+	fi
+
+	if ! fIsEmptyDir "${rawDir}"; then
+		if [[ "${onContents}" == "report" ]]; then
+			fLogWarn "Mountpoint dir '${shown}' is not empty and nothing is mounted on it. Left alone; not flagged."
+			return 1
+		fi
+		fQuarantineContents "${rawDir}"  ||  return 1
+	fi
+
+	if fIsImmutable "${rawDir}"; then
+		(( isVerbose ))  &&  fLog "OK '${shown}' is already empty and immutable."
+		return 0
+	fi
+	if (( isDryRun )); then
+		fLog "*  DRY RUN: would 'chattr +i' '${shown}'."
+		return 0
+	fi
+	if chattr +i -- "${rawDir}"; then
+		fLog "OK Set immutable on '${shown}'."
+		changedCount+=1
+	else
+		fLogError "'chattr +i' failed on '${shown}'."
+		return 1
+	fi
+}
+
+
+function fWithRawDir(){
+	## Run function $2 on the raw dir behind mountpoint path $1, with remaining args appended.
+	## If nothing is mounted there, the path is the raw dir. Otherwise bind the holding filesystem
+	## (non-recursively) to a scratch dir and use the same relative path inside it.
+	local -r mountPath="$1"  callback="$2"
+	shift 2
+
+	if ! fIsMountpoint "${mountPath}"; then
+		"${callback}" "${mountPath}" "$@"
+		return
+	fi
+
+	local -r parentDir="$(dirname "${mountPath}")"
+	local -r holdingTarget="$(fHoldingFsTarget "${parentDir}")"
+	if [[ -z "${holdingTarget}" ]]; then
+		fLogError "Cannot determine which filesystem holds '${mountPath}'."
+		return 1
+	fi
+	local relPath="${mountPath#"${holdingTarget}"}"
+	relPath="${relPath#/}"
+
+	local -r scratchDir="$(mktemp -d "/run/${meName}.bind.XXXXXX")"
+	if ! mount --bind "${holdingTarget}" "${scratchDir}"; then
+		fLogError "Bind mount of '${holdingTarget}' failed; cannot reach the raw dir behind '${mountPath}'."
+		rmdir "${scratchDir}"
+		return 1
+	fi
+	local -i rc=0
+	local -r rawDir="${scratchDir}/${relPath}"
+	if [[ -d "${rawDir}" ]]; then
+		rawShown="${mountPath}"
+		"${callback}" "${rawDir}" "$@"  ||  rc=$?
+		rawShown=""
+	else
+		fLogError "Raw dir '${relPath}' not found inside '${holdingTarget}' (bind view). Not a directory?"
+		rc=1
+	fi
+	## Mount watchers (udisks, gvfs) sometimes peek into a brand-new mount; give them a moment, then detach lazily.
+	umount "${scratchDir}" 2>/dev/null  ||  { sleep 0.2; umount "${scratchDir}" 2>/dev/null; }  ||  umount -l "${scratchDir}"  ||  true
+	rmdir "${scratchDir}" 2>/dev/null  ||  true
+	return "${rc}"
+}
+
+
+function fSeenBefore(){
+	## Dedup by device:inode of the raw dir, so bind copies of the same tree are handled once.
+	local -r ident="$(stat -c '%d:%i' -- "${1}" 2>/dev/null || true)"
+	[[ -z "${ident}" ]]  &&  return 1
+	[[ -n "${seenDirs[${ident}]:-}" ]]  &&  return 0
+	seenDirs[${ident}]=1
+	return 1
+}
+
+function fSecureRawDirOnce(){
+	fSeenBefore "${1}"  &&  return 0
+	fSecureRawDir "$@"
+}
+
+function fReleaseRawDir(){
+	local -r shown="${rawShown:-$1}"
+	if ! fIsImmutable "${1}"; then
+		fLog "OK '${shown}' was not immutable."
+		return 0
+	fi
+	if (( isDryRun )); then
+		fLog "*  DRY RUN: would 'chattr -i' '${shown}'."
+		return 0
+	fi
+	chattr -i -- "${1}"  &&  fLog "OK Removed immutable from '${shown}'."
+}
+
+
+function fHandleDataset(){
+	## One dataset. $1: name. $2: "mount" (must end up mounted) or "audit" (mount only canmount=on).
+	## Adds to failedItems on real failure.
+	local -r dataset="$1"  mode="$2"
+	local -r canmount="$(fGetZfsProp "${dataset}" canmount)"
+	if [[ "${canmount}" == "off" ]]; then
+		(( isVerbose ))  &&  fLog "*  Skipping '${dataset}' (canmount=off)."
+		return 0
+	fi
+	local -r mountLocation="$(fGetMountpointFor "${dataset}")"
+	if [[ -z "${mountLocation}" ]]; then
+		(( isVerbose ))  &&  fLog "*  Skipping '${dataset}' (no mountpoint)."
+		return 0
+	fi
+
+	if [[ "$(fGetZfsProp "${dataset}" mounted)" == "yes" ]]; then
+		if fIsMountpoint "${mountLocation}"; then
+			fWithRawDir "${mountLocation}" fSecureRawDirOnce quarantine  ||  failedItems+=("${dataset}")
+		else
+			fLogWarn "'${dataset}' reports mounted but '${mountLocation}' is not a mountpoint; skipping."
+		fi
+		return 0
+	fi
+
+	## Not mounted.
+	local -r keyStatus="$(fGetZfsProp "${dataset}" keystatus)"
+	local -i shouldMount=0
+	if [[ "${mode}" == "mount" ]]; then
+		shouldMount=1
+	elif [[ "${canmount}" == "on" ]]; then
+		shouldMount=1
+	fi
+	if [[ "${keyStatus}" == "unavailable" ]]; then
+		if (( shouldMount )) && [[ "${mode}" == "mount" ]]; then
+			fLogError "'${dataset}' cannot mount: its key is not loaded."
+			failedItems+=("${dataset}")
+		fi
+		return 0
+	fi
+
+	if (( ! shouldMount )); then
+		## noauto and unmounted, by design. Flag its dir if reachable and empty; only report if not.
+		if [[ -d "${mountLocation}" ]] && ! fIsMountpoint "${mountLocation}"; then
+			fSecureRawDirOnce "${mountLocation}" report  ||  true
+		fi
+		return 0
+	fi
+
+	if [[ "${EUID}" -ne 0 ]]; then
+		fLogError "'${dataset}' needs mounting but this process is not root (euid=${EUID})."
+		failedItems+=("${dataset}")
+		return 0
+	fi
+
+	if [[ ! -d "${mountLocation}" ]]; then
+		if (( isDryRun )); then
+			fLog "*  DRY RUN: would create '${mountLocation}'."
+		elif ! mkdir -p -- "${mountLocation}"; then
+			fLogError "Cannot create mountpoint dir '${mountLocation}' for '${dataset}'."
+			failedItems+=("${dataset}")
+			return 0
+		fi
+	fi
+	if fIsMountpoint "${mountLocation}"; then
+		fLogError "Something else is already mounted on '${mountLocation}'; not mounting '${dataset}' over it."
+		failedItems+=("${dataset}")
+		return 0
+	fi
+	if [[ -d "${mountLocation}" ]] && ! fSecureRawDirOnce "${mountLocation}" quarantine; then
+		failedItems+=("${dataset}")
+		return 0
+	fi
+
+	if (( isDryRun )); then
+		fLog "*  DRY RUN: would 'zfs mount ${dataset}' at '${mountLocation}'."
+		return 0
+	fi
+	fLog "[ Mounting '${dataset}' at '${mountLocation}' ... ]"
+	zfs mount "${dataset}"  ||  true
+	if [[ "$(fGetZfsProp "${dataset}" mounted)" == "yes" ]]; then
+		fLog "OK Mounted '${dataset}'."
+		mountedCount+=1
+		## A dir zfs mount had to create itself is not flagged yet.
+		fWithRawDir "${mountLocation}" fSecureRawDirOnce quarantine  ||  true
+	else
+		fLogError "Failed to mount '${dataset}' at '${mountLocation}'."
+		failedItems+=("${dataset}")
+	fi
+}
+
+
+function fHandleTree(){
+	## $1: root dataset; $2: mode. 'zfs list -r' is hierarchy order, so parents mount first.
+	local -a datasets=()
+	if (( isNoRecurse )); then
+		datasets=( "$1" )
+	else
+		readarray -t datasets < <(zfs list -r -H -t filesystem -o name "$1")
+	fi
+	local nextDataset=""
+	for nextDataset in "${datasets[@]}"; do
+		fHandleDataset "${nextDataset}" "$2"
+	done
+}
+
+
+function fAuditOtherMounts(){
+	## Every non-ZFS mountpoint findmnt lists, minus pseudo filesystems and runtime-managed paths.
+	local target=""  fsType=""  prefix=""
+	local -i skip=0
+	while IFS=' ' read -r target fsType; do
+		[[ -z "${target}" || "${target}" == "/" ]]  &&  continue
+		[[ "${pseudoFsTypes}" == *" ${fsType} "* ]]  &&  continue
+		[[ "${fsType}" == fuse.* ]]  &&  continue
+		skip=0
+		for prefix in "${skipPrefixes[@]}"; do
+			[[ "${target}" == "${prefix}" || "${target}" == "${prefix}/"* ]]  &&  { skip=1; break; }
+		done
+		(( skip ))  &&  continue
+		[[ -d "${target}" ]]  ||  continue
+		fWithRawDir "${target}" fSecureRawDirOnce quarantine  ||  failedItems+=("${target}")
+	done < <(findmnt -rn -o TARGET,FSTYPE | sed 's/\\x20/ /g')
+}
+
+
+function fMain(){
+	export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	cd /
+
+	local mode="mount"
+	local -a positional=()
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--dry-run|-n)   isDryRun=1 ;;
+			--no-recurse)   isNoRecurse=1 ;;
+			--verbose|-v)   isVerbose=1 ;;
+			--audit)        mode="audit" ;;
+			--audit-all)    mode="audit-all" ;;
+			--release)      mode="release" ;;
+			-h|--help)      fUsage 0 ;;
+			-*)             fLogError "Unknown option '$1'."; fUsage 1 ;;
+			*)              positional+=("$1") ;;
+		esac
+		shift
+	done
+
+	local dep=""
+	for dep in chattr lsattr findmnt mountpoint zfs; do
+		if ! command -v "${dep}" &>/dev/null; then
+			fLogError "Dependency not installed: '${dep}'."
+			return 1
+		fi
+	done
+
+	## One run at a time: the boot audit and a login must not race on the same dir.
+	exec 9>"${lockFile}"
+	if ! flock -w 120 9; then
+		fLogError "Could not get lock '${lockFile}' within 120s; another ${meName} is stuck?"
+		return 1
+	fi
+
+	case "${mode}" in
+		mount)
+			[[ "${#positional[@]}" -eq 1 ]]  ||  fUsage 1
+			if ! zfs list -H -t filesystem -o name "${positional[0]}" &>/dev/null; then
+				fLogError "No such ZFS filesystem: '${positional[0]}'."
+				return 1
+			fi
+			fHandleTree "${positional[0]}" mount
+			;;
+		audit|audit-all)
+			local -a pools=( "${positional[@]}" )
+			[[ "${#pools[@]}" -eq 0 ]]  &&  readarray -t pools < <(zpool list -H -o name)
+			local nextPool=""
+			for nextPool in "${pools[@]}"; do
+				fHandleTree "${nextPool}" audit
+			done
+			[[ "${mode}" == "audit-all" ]]  &&  fAuditOtherMounts
+			;;
+		release)
+			[[ "${#positional[@]}" -eq 1 && -d "${positional[0]}" ]]  ||  fUsage 1
+			fWithRawDir "${positional[0]}" fReleaseRawDir
+			return
+			;;
+	esac
+
+	if [[ "${#failedItems[@]}" -gt 0 ]]; then
+		fLogError "${#failedItems[@]} item(s) failed: ${failedItems[*]}"
+		return 1
+	fi
+	if (( isDryRun )); then
+		fLog "Dry run done (${mode})."
+	elif (( mountedCount || changedCount )); then
+		fLog "Done (${mode}): mounted ${mountedCount}, flagged ${changedCount}."
+	elif (( isVerbose )) || [[ "${mode}" == "mount" ]]; then
+		fLog "Done (${mode}): nothing to change."
+	fi
+	return 0
+}
+
+
+declare -i isDryRun=0
+declare -i isNoRecurse=0
+declare -i isVerbose=0
+declare -i mountedCount=0
+declare -i changedCount=0
+declare -a failedItems=()
+declare -A seenDirs=()
+declare    rawShown=""
+fMain "$@"
+
+
+##	History:
+##		- 20260907 JC: Created. Mount loop and quarantine lifted out of tkz_zfs-crypthome_login, plus the
+##		  immutable-mountpoint rule, the bind-view trick for live mounts, and the audit modes.

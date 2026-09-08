@@ -15,7 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `tkz_zfs-mount`: mounts a dataset tree the safe way (stray mountpoint contents quarantined, every mountpoint dir left empty and `chattr +i`, each dataset verified). `--audit-all` applies the immutable-mountpoint rule to every mountpoint on the box; `tkz-zfs-mount-audit.service` runs that once per boot. `--release` takes the flag off again. [20260907]
+
 ### Changed
+
+- `tkz_zfs-crypthome_login` now calls `tkz_zfs-mount` instead of mounting itself, with a plain `zfs mount` fallback if the helper is missing. [20260907]
 
 ### Removed
 
