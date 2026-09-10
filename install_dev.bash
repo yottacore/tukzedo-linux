@@ -24,7 +24,7 @@
 ##		  distribution (e.g. `tukzedo-linux/github/*`) to `/usr/local/sbin`, and mark them executable.
 ##	History: At bottom of script. (Maintained separately from and/or in addition to, cloud-based version control.)
 
-##	Copyright © 2026 Jim Collier (ID: 1cv◂‡Vᛦ)
+##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
 ##	Licensed under The GNU General Public License v2.0 or later.
 ##		https://spdx.org/licenses/GPL-2.0-or-later.html
 ##	SPDX-License-Identifier: GPL-2.0-or-later

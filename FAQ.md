@@ -1049,5 +1049,5 @@ Yes! Open a feature request on our [Issues](https://github.com/t00mietum/tukzedo
 
 ## Copyright and license
 
-> Copyright © 2026 t00mietum (ID: f⍒Ê🝅ĜᛎỹqFẅ▿⍢Ŷ‡ʬẼᛏ🜣)<br>
+> Copyright © 2026 t00mietum (CryptogID: ปʬϝღถɔ4რఠΔթะ9ƾǝu)<br>
 > Licensed under The GNU General Public License v2.0 or later <https://spdx.org/licenses/GPL-2.0-or-later.html>. No warranty.
