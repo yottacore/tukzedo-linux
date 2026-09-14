@@ -10,7 +10,8 @@
 ##			   see fTryUnmountViaSystemd() for why that order) → plain unmount (children first) →
 ##			   recursive 'umount -R' (clears foreign mounts nested in the tree - see
 ##			   fTryUmountRecursive()) → SIGTERM + retry → SIGKILL + forced unmount → lazy unmount
-##			   as a last resort.
+##			   as a last resort. A process on a TTY is never signaled, whoever owns it. If one is
+##			   holding the tree, the pass stops before the forced unmount and fails; the next pass retries.
 ##			3. Unload the ZFS encryption key, so the data is actually at rest.
 ##	Instructions:
 ##		- Deploy the two units from this repo's 'filesystem/debian_13/etc/systemd/system/':
@@ -28,6 +29,8 @@
 ##		  stale lock can never wedge this permanently.
 ##		- Logged-in detection uses 'loginctl' (systemd-logind), NOT 'who'/'users': utmp misses GUI sessions
 ##		  on this setup, which is one of the ways the previous version misbehaved.
+##		- 'su -' is invisible to both logind and utmp, so a user with any process on a TTY also counts
+##		  as logged in.
 ##		- Users with linger enabled ('loginctl enable-linger') are treated as "in use" and skipped, since
 ##		  linger is an explicit request to keep that user's services running while logged out.
 ##		- Everything is logged to '${logFile}' (see below), plus summaries to syslog:
@@ -87,9 +90,11 @@ function fGetMountpointFor(){
 
 
 function fIsUserInUse(){
-	## Returns 0 (in use - do not touch) if the user has any live logind presence, else 1.
+	## Returns 0 (in use - do not touch) if the user looks logged in by any means, else 1.
 	local -r userName="$1"
 	local -r state="$(loginctl show-user "${userName}" --property=State --value 2>/dev/null || true)"
+	## 'closing' is left out on purpose: no session is active any more, and the unit's ExecStartPre
+	## sleep gives it time to finish.
 	case "${state}" in
 		"active"|"online"|"opening")
 			fLog "•  loginctl reports user '${userName}' State=${state}."
@@ -101,8 +106,17 @@ function fIsUserInUse(){
 		;;
 	esac
 	## Belt-and-braces; utmp can't see GUI sessions here, but if it DOES claim a login, believe it.
-	if who | awk '{print $1}' | grep -qx "${userName}" 2>/dev/null; then
+	## awk reads to the end: an early-exiting 'grep -q' here can SIGPIPE the writer, and pipefail
+	## turns that match into a miss.
+	if who 2>/dev/null | U="${userName}" awk '$1==ENVIRON["U"] {found=1} END {exit !found}'; then
 		fLog "•  'who' reports user '${userName}' as logged in."
+		return 0
+	fi
+	## 'su -' opens no logind session and writes no utmp record, but its shell has a controlling TTY.
+	## Unlike "has any process", a TTY can't let a stray daemon keep the home mounted forever.
+	local -r userTty="$(ps -o tty= -u "${userName}" 2>/dev/null | awk '$1!="?" && tty=="" {tty=$1} END {print tty}' || true)"
+	if [[ -n "${userTty}" ]]; then
+		fLog "•  User '${userName}' has a process on ${userTty} (e.g. 'su -'); treating as logged in."
 		return 0
 	fi
 	return 1
@@ -189,6 +203,59 @@ function fTryUmountRecursive(){
 }
 
 
+function fSignalHolders(){
+	## Sends signal $1 to user $2's processes and to every holder of the mounted tree under $3.
+	## A process on a TTY is spared, whoever owns it: a missed unmount is retried next pass, a killed
+	## shell is gone. Returns 1 if anything was spared.
+	local -r signalName="$1"
+	local -r userName="$2"
+	local -r rootDataset="$3"
+	local nextDataset=""  nextMountLocation=""  nextPid=""  nextTty=""  nextOwner=""  nextCommand=""
+	local -a candidatePids=()  holderPids=()  targetPids=()
+	local -i sparedCount=0
+	readarray -t candidatePids < <(pgrep -u "${userName}" 2>/dev/null || true)
+	while read -r nextDataset; do
+		[[ -z "${nextDataset}" ]]  &&  continue
+		nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
+		[[ -z "${nextMountLocation}" ]]  &&  continue
+		## fuser prints PIDs on stdout, the path and access letters on stderr.
+		read -r -a holderPids <<<"$(fuser -M -m "${nextMountLocation}" 2>/dev/null || true)"
+		candidatePids+=("${holderPids[@]}")
+	done < <(fListMountedInTree "${rootDataset}")
+	[[ "${#candidatePids[@]}" -eq 0 ]]  &&  return 0
+	## ps drops duplicates and anything that already exited. PID 1 is never a target.
+	while read -r nextPid nextTty nextOwner nextCommand; do
+		[[ -z "${nextPid}" || "${nextPid}" == "1" ]]  &&  continue
+		if [[ "${nextTty}" != "?" ]]; then
+			fLog "⚠️  Sparing pid ${nextPid} (${nextOwner}: ${nextCommand}); it is on ${nextTty}."
+			sparedCount+=1
+			continue
+		fi
+		targetPids+=("${nextPid}")
+	done < <(IFS=','; ps -o pid=,tty=,user:32=,comm= -p "${candidatePids[*]}" 2>/dev/null || true)
+	if [[ "${#targetPids[@]}" -gt 0 ]]; then
+		fLog "•  Executing: kill -s ${signalName} ${targetPids[*]}"
+		kill -s "${signalName}" "${targetPids[@]}" 2>/dev/null  ||  true
+	fi
+	if [[ "${sparedCount}" -gt 0 ]]; then
+		isNoteworthy=1
+		return 1
+	fi
+	return 0
+}
+
+
+function fIsUserBack(){
+	## Called before each rung that signals or forces. A login since the first check must not lose its shell.
+	local -r userName="$1"
+	fIsUserInUse "${userName}"  ||  return 1
+	fLog "⚠️  User '${userName}' logged in during this pass. Stopping; some of their datasets may be left unmounted."
+	fSyslog "WARNING: user '${userName}' logged in during the unmount pass; stopped before signaling anything. Their datasets may be partly unmounted."
+	isNoteworthy=1
+	return 0
+}
+
+
 function fProcessUser(){
 	## Evaluates one user+dataset pair, and if the user is logged out, unmounts and locks their home.
 	## Returns non-zero only on actual failure to unmount/lock.
@@ -260,35 +327,30 @@ function fProcessUser(){
 		fTryUmountRecursive "${rootDataset}"
 	fi
 
+	## The rungs below signal processes or force the unmount. Each re-checks for a login first. Once a
+	## process on a TTY has been spared, a forced or lazy unmount would pull the tree out from under it.
+	local -i isTtyHolderSpared=0
 	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]]; then
+		fIsUserBack "${userName}"  &&  return 0
 		fLog "•  Still mounted; sending SIGTERM to '${userName}'s processes and to holders of these filesystems ..."
-		pkill -15 -u "${userName}" 2>/dev/null  ||  true
-		while read -r nextDataset; do
-			[[ -z "${nextDataset}" ]]  &&  continue
-			nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
-			[[ -z "${nextMountLocation}" ]]  &&  continue
-			fLog "•  Executing: fuser -k -15 -M -m '${nextMountLocation}'"
-			fuser -k -15 -M -m "${nextMountLocation}" 2>&1  ||  true
-		done < <(fListMountedInTree "${rootDataset}")
+		fSignalHolders TERM "${userName}" "${rootDataset}"  ||  isTtyHolderSpared=1
 		sleep 3
 		fTryUnmountAll "${rootDataset}"
 	fi
 
-	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]]; then
-		fLog "•  STILL mounted; sending SIGKILL and force-unmounting ..."
-		pkill -9 -u "${userName}" 2>/dev/null  ||  true
-		while read -r nextDataset; do
-			[[ -z "${nextDataset}" ]]  &&  continue
-			nextMountLocation="$(fGetMountpointFor "${nextDataset}")"
-			[[ -z "${nextMountLocation}" ]]  &&  continue
-			fLog "•  Executing: fuser -k -9 -M -m '${nextMountLocation}'"
-			fuser -k -9 -M -m "${nextMountLocation}" 2>&1  ||  true
-		done < <(fListMountedInTree "${rootDataset}")
+	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]] && ((isTtyHolderSpared == 0)); then
+		fIsUserBack "${userName}"  &&  return 0
+		fLog "•  STILL mounted; sending SIGKILL ..."
+		fSignalHolders KILL "${userName}" "${rootDataset}"  ||  isTtyHolderSpared=1
 		sleep 2
-		fTryUnmountAll "${rootDataset}" "-f"
+		if ((isTtyHolderSpared == 0)); then
+			fLog "•  Force-unmounting ..."
+			fTryUnmountAll "${rootDataset}" "-f"
+		fi
 	fi
 
-	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]]; then
+	if [[ -n "$(fListMountedInTree "${rootDataset}")" ]] && ((isTtyHolderSpared == 0)); then
+		fIsUserBack "${userName}"  &&  return 0
 		fLog "•  STILL mounted after force; lazy-unmounting as a last resort (holders keep zombie handles until they exit) ..."
 		while read -r nextDataset; do
 			[[ -z "${nextDataset}" ]]  &&  continue
@@ -304,8 +366,10 @@ function fProcessUser(){
 	local -a stillMounted=()
 	readarray -t stillMounted < <(fListMountedInTree "${rootDataset}")
 	if [[ "${#stillMounted[@]}" -gt 0 ]]; then
-		fLog "❌ FAILURE: still mounted for logged-out user '${userName}': ${stillMounted[*]}"
-		fSyslog "FAILURE: could not unmount for logged-out user '${userName}': ${stillMounted[*]}"
+		local ttyNote=""
+		((isTtyHolderSpared))  &&  ttyNote=" (a process on a TTY is still using it)"
+		fLog "❌ FAILURE: still mounted for logged-out user '${userName}'${ttyNote}: ${stillMounted[*]}"
+		fSyslog "FAILURE: could not unmount for logged-out user '${userName}'${ttyNote}: ${stillMounted[*]}"
 		return 1
 	fi
 	fLog "✔️ All of '${userName}'s datasets are unmounted."
@@ -375,7 +439,7 @@ function fMain(){
 
 	## Fail loudly if a hard dependency is missing.
 	local dep=""
-	for dep in awk findmnt flock fuser getent loginctl mountpoint pkill stat systemctl systemd-escape tac umount who zfs; do
+	for dep in awk findmnt flock fuser getent loginctl mountpoint pgrep ps stat systemctl systemd-escape tac umount who zfs; do
 		if ! command -v "${dep}" &>/dev/null; then
 			fLog "❌ ERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: '${dep}'."
 			fSyslog "ERROR: dependency not installed: '${dep}'."
@@ -478,3 +542,8 @@ exit "${exitCode}"
 ##			  nothing to do no longer write to the log file.
 ##			- The unit's start timeout kills a wedged run, whole cgroup, so the flock can never block later
 ##			  runs. Companion cron file removed from the repo.
+##		- 20260914: A user logged in only through 'su -' was treated as logged out, and their shell was killed.
+##			- A process the user has on a TTY now counts as logged in.
+##			- Re-checks for a login before each rung that signals or forces.
+##			- Never signals a process on a TTY. While one holds the tree, no forced or lazy unmount; the
+##			  pass fails and the next one retries.
