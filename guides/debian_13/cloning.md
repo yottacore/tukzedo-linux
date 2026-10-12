@@ -240,7 +240,7 @@ Systems installed directly onto basic filesystems like ext4 present few cloning 
 	- Reboot back into your rescue image, drive, or live iso.
 	- Make the changes
 	- Update `root=ZFS=` in `/etc/kernel/uki-cmdline.conf`, and any renamed pools in `/etc/tukzedo/zfs-pools.conf`, then rebuild the UKI.
-	- A stale hostid no longer stops the boot, since `zfs_force=1` and `tkz_zfs-import` force past it. Give each clone its own hostid anyway, so the import log shows which host had a pool last.
+	- A stale hostid no longer stops the boot of a pool inside the LUKS container, since `tkz_zfs-import` forces past it. Give each clone its own hostid anyway, so the import log shows which host had a pool last.
 	- Reboot into the new system (VM) to make sure the system works with the new names.
 - Change systemd hostid, system hostname, and optionally static IP.
 	- These are done within the running target system, so probably no reboot necessary from the previous step.

@@ -23,7 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `tkz_resign-sdboot` re-signs systemd-boot after an apt upgrade, so it still boots with Secure Boot on. [20261011]
 
-- Pools import at boot even after the drive moves between hosts. `zfs_force=1` on the kernel command line makes the initrd's stock import force past a stale hostid. `tkz_zfs-import` retries the root pool for up to 60 seconds after the stock import, activating LVM first, and prints what it can see if it still fails. In the running system, `tkz-zfs-import.service` deletes the ZFS cache file at boot and shutdown, and gives pools listed in `/etc/tukzedo/zfs-pools.conf` the same retry and force treatment. [20261012]
+- Pools import at boot even after the drive moves between hosts. `tkz_zfs-import` activates LVM and imports the root pool before the stock import, retrying for up to 60 seconds, and prints what it can see if it still fails. It forces past a stale hostid only for pools inside the boot LUKS container. In the running system, `tkz-zfs-import.service` deletes the ZFS cache file at boot and shutdown, and gives pools listed in `/etc/tukzedo/zfs-pools.conf` the same treatment. [20261012]
 
 ### Changed
 
@@ -31,7 +31,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `tkz_rebuild-uki` works with any pool name, and signs the systemd-boot copy that shim loads. [20261011]
 
-- `tkz_rebuild-uki` requires `zfs_force=1` and the `tkz_zfs-import` pieces, and now warns when a forbidden file such as `zpool.cache` is in the UKI. That list was kept but never checked. [20261012]
+- `tkz_rebuild-uki` requires the `tkz_zfs-import` pieces, warns about `zfs_force=1` or `rd.neednet=1` on the command line, and now warns when a forbidden file such as `zpool.cache` is in the UKI. That list was kept but never checked. [20261012]
+
+- The build guide drops `rd.neednet=1`. With no network it held the boot for 2 minutes, and SSH unlock works without it. [20261012]
 
 - `tkz_zfs-crypthome_login` mounts through `tkz_zfs-mount`, and falls back to plain `zfs mount` if the helper is missing. [20260907]
 

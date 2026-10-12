@@ -246,9 +246,9 @@ ZFS was the first mainstream, enterprise-grade Copy-on-Write (CoW) filesystem th
 		- Although the cachefile can be disabled (in favor of a slower "scan"-based discovery method), it really can't be. The ZFS property to do so is ephemeral and resets at next boot; and the cachefile itself, if deleted, regenerates. (Notably, "scan-based discovery" is the _only_ method that Btrfs uses.)
 
 		- This project layers several fixes, so that no single one has to work:
-			- `zfs_force=1` on the kernel command line makes the stock initrd import use `-f`, so a pool that another host didn't export still imports.
-			- `tkz_zfs-import` retries the root pool in the initrd for up to 60 seconds, after activating LVM, and forces if needed. The stock import runs only once, and can run before the LVM volume exists.
-			- In the running system, `tkz-zfs-import.service` deletes the cachefile at every boot and shutdown, sets `cachefile=none` on every imported pool, and gives pools listed in `/etc/tukzedo/zfs-pools.conf` the same retry and force treatment.
+			- `tkz_zfs-import` imports the root pool in the initrd before the stock import does, after activating LVM, and retries for up to 60 seconds. The stock import runs only once, and can run before the LVM volume exists.
+			- It forces past a pool that another host didn't export, but only when all the pool's devices are inside the boot LUKS container. Nothing else can have those open. Any other pool is never forced, since another running system might really have it imported.
+			- In the running system, `tkz-zfs-import.service` deletes the cachefile at every boot and shutdown, sets `cachefile=none` on every imported pool, and gives pools listed in `/etc/tukzedo/zfs-pools.conf` the same retry treatment.
 			- `tkz_rebuild-uki` clears the cachefile before every build, and warns if one got into the UKI anyway. The dracut module also strips it from the initrd.
 
 - When creating a pool, or importing with default options, ZFS doesn't use the _only "one-true" device identifier_ to reference the block devices by. You just have to "know" (or painfully realize over time and lessons learned) that the only correct identifier is:
