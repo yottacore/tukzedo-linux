@@ -23,11 +23,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `tkz_resign-sdboot` re-signs systemd-boot after an apt upgrade, so it still boots with Secure Boot on. [20261011]
 
+- `tkz_user hold <user>` keeps the logout watchdog away from that user's home until `tkz_user release <user>`, or a reboot. [20261012]
+
 ### Changed
 
 - `guides/.../creation.md` is rewritten as a complete build procedure. There's no Grub or boot pool. Signed UKIs go on a 4 GiB ESP, LUKS unlocks over SSH or from a USB stick, root is on ZFS, most users get an encrypted home, and the drive boots on Intel, AMD or Nvidia graphics. [20261011]
 
 - `tkz_rebuild-uki` works with any pool name, and signs the systemd-boot copy that shim loads. [20261011]
+
+- The logout watchdog and `tkz_zfs-mount` keep their locks in `/run/tkz`, which only root can get into. Before, any user could stop the watchdog, or block encrypted-home logins, by making the lock file first in `/dev/shm` or `/run/lock`. [20261012]
 
 - `tkz_zfs-crypthome_login` mounts through `tkz_zfs-mount`, and falls back to plain `zfs mount` if the helper is missing. [20260907]
 

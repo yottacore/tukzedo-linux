@@ -799,6 +799,8 @@ The login script unlocks and mounts a user's encrypted home when they log in, us
 	journalctl -t tkz_zfs-crypthome_login -t tkz_zfs-crypthome_logout-watchdog -n 20
 	~~~
 
+- The watchdog locks a logged-out user's home even if root unlocked it on purpose. To stop that for one user, use `tkz_user hold`, under [Add and manage users](#add-and-manage-users).
+
 - When a user changes their password, their home's ZFS key has to change to match, or their next login fails. Until a script handles both together, do the 2 steps by hand while they're logged in:
 
 	~~~bash
@@ -966,7 +968,14 @@ The stick can be ext4, FAT or exFAT. Plug it into the machine you're working on.
 	tkz_user passwd alice
 	~~~
 
-	Loading a logged-out user's key by hand doesn't get around that prompt. The logout watchdog locks it again the next time any session closes.
+	Loading a logged-out user's key by hand doesn't get around that prompt, unless the user is held first, as below. Otherwise the logout watchdog locks it again the next time any session closes.
+
+- Keep the logout watchdog away from a user's home, for example to work in it as root while they're logged out. A held user's home stays as it is, unlocked or not, until you release them or the box reboots. If a watchdog run is going, `hold` waits for it to finish.
+
+	~~~bash
+	tkz_user hold alice
+	tkz_user release alice
+	~~~
 
 - Move an existing plain home into a new encrypted dataset. The user has to be logged out, with nothing of theirs still running. Their files are copied over, and the old home is kept under a new name until you delete it. If it fails partway, it puts back the old home and password. A `~/.cache`, `~/tmp` or `~/var` that's a symlink stays a symlink, and doesn't get its own dataset.
 
@@ -974,7 +983,7 @@ The stick can be ext4, FAT or exFAT. Plug it into the machine you're working on.
 	tkz_user migrate guest
 	~~~
 
-- See every home dataset, and whether it's encrypted, unlocked and mounted:
+- See every home dataset, and whether it's encrypted, unlocked and mounted. Held users are listed below the table:
 
 	~~~bash
 	tkz_user status
@@ -1196,6 +1205,8 @@ These scripts won't necessarily do much good without following an installation g
 	~~~
 
 ## Document history
+
+- 2026-10-12: `tkz_user hold` and `release` keep the logout watchdog away from one user's home. The watchdog's and `tkz_zfs-mount`'s locks moved to `/run/tkz`, where other users can't get at them.
 
 - 2026-10-11: Rewrote the procedure as real steps. Grub and bpool are gone, and shim starts systemd-boot from a 4 GiB ESP. Added USB key unlock, SSH unlock with dracut-sshd 0.7.1, the ZFS mount generator, and `tkz_user`.
 
