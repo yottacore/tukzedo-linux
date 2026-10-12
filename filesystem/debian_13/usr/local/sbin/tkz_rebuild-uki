@@ -113,7 +113,7 @@ fMain(){
 	local -ri doSecureBootSigning=1
 
 	## Validate
-	{ ((require_Root_ZFS)) && ((require_Root_Btrfs)); }  &&  { error -e "\nERROR in ${meName}.${FUNCNAME[0]}(): It makes no sense to have root on both ZFS and Btrfs.\n" >&2 ; return 1; }
+	{ ((require_Root_ZFS)) && ((require_Root_Btrfs)); }  &&  { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): It makes no sense to have root on both ZFS and Btrfs.\n" >&2 ; return 1; }
 	which awk         &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'awk'.\n"                       >&2 ; return 1; }
 	which basename    &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'basename'.\n"                  >&2 ; return 1; }
 	which column      &>/dev/null || { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): Dependency not installed: 'column'.\n"                    >&2 ; return 1; }
@@ -180,8 +180,7 @@ fMain(){
 	if ((require_Root_ZFS)); then
 		echo "[ Clearing ZFS cachefile settings and file, to force scan-based import ... ]"
 		if ((! dryRun)); then
-			sudo zpool set cachefile=none rpool_t2nsn 2>/dev/null || true
-			sudo zpool set cachefile=none bpool_t2nsn 2>/dev/null || true
+			for nextPool in $(zpool list -H -o name 2>/dev/null); do sudo zpool set cachefile=none "${nextPool}" || true; done
 			[[ -f /etc/zfs/zpool.cache ]] && sudo rm -f /etc/zfs/zpool.cache
 		fi
 		## NOTE: Do NOT mask 'boot-efi.mount' here. This script used to, on the theory that the
@@ -208,7 +207,7 @@ fMain(){
 		## Build UKI for ALL kernels found under /boot
 		local -a allKernels=()
 		readarray -t allKernels < <(sudo find /boot -maxdepth 1 -iname 'vmlinuz-*' 2>/dev/null | sed 's|.*/vmlinuz-||' | sort || true)
-		[[ "${#allKernels[@]}" -eq 0 ]]  &&  { error -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No kernels found in /boot\n" >&2 ; return 1; }
+		[[ "${#allKernels[@]}" -eq 0 ]]  &&  { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No kernels found in /boot\n" >&2 ; return 1; }
 		for nextKernel in "${allKernels[@]}"; do fBuild_UKI "${nextKernel}"; done
 	else
 		## Build one specific version
@@ -262,7 +261,7 @@ fPopulateCheckArrays(){
 	## systemd-boot
 		if ((require_Systemd_Boot)); then
 			__fPopulateContentCheckArray      REQ   '/boot/efi/loader/'                'loader.conf'
-			__fPopulateContentCheckArray      REQ   '/etc/kernel/'                     'install.conf'      'layout=uefi'
+			__fPopulateContentCheckArray      REQ   '/etc/kernel/'                     'install.conf'      'layout=(uefi|other)'
 			__fPopulateContentCheckArray      REQ   '/etc/kernel/'                     'install.conf'      'BOOT_ROOT=/boot/efi'
 		fi
 
@@ -326,8 +325,6 @@ fPopulateCheckArrays(){
 
 	## ZFS
 		if ((require_Root_ZFS)); then
-			requiredFiles+=("/usr/lib/dracut/modules.d/99zfs-force-import/force-import.sh")
-			requiredFiles+=("/usr/lib/dracut/modules.d/99zfs-force-import/module-setup.sh")
 			__fPopulateContentCheckArray      REQ   '/etc/'                            'fstab'             '[ ]+/boot/efi[ ]+vfat[ ]+.*x-systemd.after=zfs-import.target[ ]+'
 			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'add_dracutmodules\+=.* zfs '
 			__fPopulateContentCheckArray      REQ   '/etc/dracut.conf.d/'              '*.conf'            'force_dracutmodules\+=.* zfs '
@@ -350,7 +347,6 @@ fPopulateCheckArrays(){
 				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_PRELOAD_MODULES=.*[^a-z0-9]zfs[^a-z0-9]'
 				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_CMDLINE_LINUX=.*[^a-z0-9]root=ZFS=[^[:space:]]+'
 			fi
-			requiredModules+=("force-import.sh")
 			requiredModules+=("parse-zfs.sh")
 			requiredModules+=("sbin/zfs")
 			requiredModules+=("sbin/zpool")
@@ -620,8 +616,8 @@ fSign_EFIs() {
 	local -r SYSTEMD_BOOT_SRC="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
 
 	## Validate
-	[[ ! -f "${MOK_KEY}" ]]  && { error -e "\nERROR in ${meName}.${FUNCNAME[0]}(): MOK key not found: '${MOK_KEY}'.\n"   >&2 ; return 1; }
-	[[ ! -f "${MOK_CERT}" ]] && { error -e "\nERROR in ${meName}.${FUNCNAME[0]}(): MOK cert not found: '${MOK_CERT}'.\n" >&2 ; return 1; }
+	[[ ! -f "${MOK_KEY}" ]]  && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): MOK key not found: '${MOK_KEY}'.\n"   >&2 ; return 1; }
+	[[ ! -f "${MOK_CERT}" ]] && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): MOK cert not found: '${MOK_CERT}'.\n" >&2 ; return 1; }
 
 	## Sign all UKIs
 	local -a ukiArr=()
@@ -635,7 +631,7 @@ fSign_EFIs() {
 	## Sign systemd-boot binaries
 	local -a efiArr=(
 		"${ESP_DIR}/EFI/debian/grubx64.efi"
-		"${ESP_DIR}/EFI/BOOT/BOOTX64.EFI"
+		"${ESP_DIR}/EFI/BOOT/grubx64.efi"  ## BOOTX64.EFI next to it is shim, so firmware with no boot entries still gets a chain it trusts.
 		"${ESP_DIR}/EFI/systemd/systemd-bootx64.efi"
 	)
 	for nextEfi in "${efiArr[@]}"; do
@@ -813,3 +809,9 @@ echo
 ##			  fParseArgs(), called before the root check: unknown options, conflicting args, and a
 ##			  bare 'all' (with a "did you mean '--all'?" hint) now fail immediately. A nonexistent
 ##			  kernel version also fails at the top of fMain(), before the ZFS cachefile is cleared.
+##		- 20261011 tt:
+##			- Clear the cachefile on whatever pools are imported, instead of two hard-coded pool names.
+##			- Dropped the bpool force-import module checks; there's no bpool anymore.
+##			- Accept 'layout=other' in install.conf. kernel-install only acts on 'bls' and 'uki', so either value keeps it off the ESP.
+##			- Sign systemd-boot into EFI/BOOT/grubx64.efi, not over BOOTX64.EFI, which is shim now.
+##			- Error paths called a nonexistent 'error' command.

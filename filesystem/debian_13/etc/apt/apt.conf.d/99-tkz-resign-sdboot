@@ -1,0 +1,2 @@
+// Re-sign systemd-boot on the ESP if a package upgrade replaced it with an unsigned build.
+DPkg::Post-Invoke { "if [ -x /usr/local/sbin/tkz_resign-sdboot ]; then /usr/local/sbin/tkz_resign-sdboot || true; fi"; };

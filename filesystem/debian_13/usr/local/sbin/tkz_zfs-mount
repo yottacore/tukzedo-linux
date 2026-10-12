@@ -202,6 +202,13 @@ function fWithRawDir(){
 	local -r mountPath="$1"  callback="$2"
 	shift 2
 
+	## '/' has no raw dir behind it. Its "holding filesystem" is itself, so the bind view would be the
+	## whole live root, and quarantine would move the OS out from under itself.
+	if [[ "${mountPath}" == "/" ]]; then
+		(( isVerbose ))  &&  fLog "*  Skipping '/' (nothing underneath it)."
+		return 0
+	fi
+
 	if ! fIsMountpoint "${mountPath}"; then
 		"${callback}" "${mountPath}" "$@"
 		return
@@ -482,3 +489,5 @@ fMain "$@"
 ##	History:
 ##		- 20260907 JC: Created. Mount loop and quarantine lifted out of tkz_zfs-crypthome_login, plus the
 ##		  immutable-mountpoint rule, the bind-view trick for live mounts, and the audit modes.
+##		- 20261011 tt: Skip "/" in fWithRawDir(). With root on ZFS, --audit/--audit-all bound "/" onto itself
+##		  and tried to quarantine the whole live root.

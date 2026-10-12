@@ -1,0 +1,298 @@
+#!/bin/bash
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+
+##	Purpose:
+##		- Create users whose home is its own ZFS dataset, plain or encrypted.
+##		- Change a password and the encrypted home's ZFS key together, so login keeps unlocking the home.
+##		- Move an existing plain home into a new encrypted dataset.
+##	Notes:
+##		- An encrypted home is unlocked at login by tkz_zfs-crypthome_login, using the login password as the
+##		  ZFS key. So the 2 must always match. Use 'tkz_user passwd' instead of plain 'passwd' for those users.
+##		- The ZFS key is built the same way the login helper builds it, including the optional salt file.
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+set -euo pipefail
+
+declare -r meName="$(basename "${0}")"
+declare -r custProp_UserName="x9.custom.automount:user"
+declare -r pwdLongSaltFile="/etc/cryptkeys/zfs_pam_longsalt_${HOSTNAME}.txt"  ## Same file the login helper reads.
+declare -ra encChildren=(".cache" "tmp" "var")  ## Separate datasets, left out of auto-snapshots.
+
+fShowHelp(){
+	cat <<EOF
+
+Usage:
+  ${meName} add <user> [--encrypt] [--admin] [--groups g1,g2] [--uid N] [--comment TEXT]
+  ${meName} passwd <user>
+  ${meName} migrate <user>
+  ${meName} status [user]
+
+  add      Create a home dataset under the dataset mounted at /home, then the user, then set a password.
+           --encrypt   Encrypted home, unlocked at login with the password.
+           --admin     Also add to sudo and adm.
+  passwd   Change the login password. For an encrypted home, change its ZFS key to match, in one step.
+  migrate  Move a user's plain home (a folder, or a plain dataset) into a new encrypted dataset.
+           The user must be logged out. The old home is kept, renamed, until you delete it.
+  status   Show users with a home dataset, and whether each is encrypted, unlocked and mounted.
+
+Must run as root.
+EOF
+}
+
+fDie(){ echo -e "${meName}: ERROR: $*" >&2; exit 1; }
+fSay(){ echo "[ $* ]"; }
+
+fHomeParent(){
+	## The dataset mounted at /home.
+	local p=""
+	p="$(zfs list -H -o name,mountpoint -t filesystem 2>/dev/null | awk '$2=="/home"{print $1; exit}')"
+	[[ -n "${p}" ]]  ||  fDie "No ZFS dataset is mounted at /home."
+	echo "${p}"
+}
+
+fZfsKeyFor(){
+	## $1: password. Echoes the ZFS key the login helper would use for it.
+	local k="$1"  salt=""
+	if [[ -f "${pwdLongSaltFile}" ]]; then
+		salt="$(tr -d '\n' < "${pwdLongSaltFile}" 2>/dev/null || true)"
+		[[ -n "${salt}" ]]  &&  k="${k}_${salt}"
+	fi
+	printf '%s' "${k}"
+}
+
+fReadNewPassword(){
+	## Sets global $newPwd. Prompts twice.
+	local p1="" p2=""
+	read -r -s -p "New password for '$1': " p1; echo
+	read -r -s -p "Again: " p2; echo
+	[[ "${p1}" == "${p2}" ]]  ||  fDie "Passwords don't match."
+	[[ ${#p1} -ge 8 ]]  ||  fDie "Use at least 8 characters. ZFS won't accept a shorter key."
+	newPwd="${p1}"
+}
+
+fUserExists(){ getent passwd "$1" >/dev/null; }
+fIsLoggedIn(){ loginctl list-users --no-legend 2>/dev/null | awk '{print $2}' | grep -qx "$1"; }
+
+fCreateEncChildren(){
+	## $1: user dataset; $2: user
+	local c=""
+	for c in "${encChildren[@]}"; do
+		zfs create -o canmount=on -o mountpoint="/home/$2/${c}" -o com.sun:auto-snapshot=false "$1/${c}"
+	done
+}
+
+fFixOwnership(){
+	## $1: user. Owner, modes, skel files.
+	local u="$1"  g=""
+	g="$(id -gn "${u}")"
+	cp -rn /etc/skel/. "/home/${u}/" 2>/dev/null || true
+	chown -R "${u}:${g}" "/home/${u}"
+	chmod 750 "/home/${u}"
+	local c=""
+	for c in "${encChildren[@]}"; do [[ -d "/home/${u}/${c}" ]] && chmod 700 "/home/${u}/${c}"; done
+	return 0
+}
+
+fCmdAdd(){
+	local u="" enc=0 admin=0 groups="audio,video,plugdev,users" uid="" comment=""
+	while (( $# )); do
+		case "$1" in
+			--encrypt) enc=1 ;;
+			--admin)   admin=1 ;;
+			--groups)  shift; groups="${groups},${1:?}" ;;
+			--uid)     shift; uid="${1:?}" ;;
+			--comment) shift; comment="${1:?}" ;;
+			-*)        fDie "Unknown option '$1'." ;;
+			*)         [[ -z "${u}" ]] || fDie "Only one user name, please."; u="$1" ;;
+		esac
+		shift
+	done
+	[[ -n "${u}" ]]  ||  fDie "Missing user name."
+	[[ "${u}" =~ ^[a-z_][a-z0-9_-]*$ ]]  ||  fDie "'${u}' isn't a valid user name."
+	fUserExists "${u}"  &&  fDie "User '${u}' already exists. To encrypt their home, use: ${meName} migrate ${u}"
+	((admin))  &&  groups="${groups},sudo,adm"
+
+	local -r parent="$(fHomeParent)"
+	local -r ds="${parent}/${u}"
+	zfs list -H "${ds}" &>/dev/null  &&  fDie "Dataset '${ds}' already exists."
+	[[ -e "/home/${u}" ]]  &&  fDie "'/home/${u}' already exists."
+
+	local newPwd=""
+	fReadNewPassword "${u}"
+
+	if ((enc)); then
+		fSay "Creating encrypted dataset '${ds}'"
+		fZfsKeyFor "${newPwd}" | zfs create -o encryption=aes-256-gcm -o keyformat=passphrase -o keylocation=prompt -o pbkdf2iters=600000 \
+			-o canmount=noauto -o mountpoint="/home/${u}" -o "${custProp_UserName}=${u}" -o org.openzfs.systemd:ignore=on "${ds}"
+		zfs mount "${ds}"
+		fCreateEncChildren "${ds}" "${u}"
+	else
+		fSay "Creating dataset '${ds}'"
+		zfs create -o canmount=on -o mountpoint="/home/${u}" "${ds}"
+	fi
+
+	fSay "Creating user '${u}'"
+	useradd ${uid:+-u "${uid}"} -U -c "${comment}" -s /bin/bash -d "/home/${u}" -M -G "${groups}" "${u}"
+	printf '%s:%s\n' "${u}" "${newPwd}" | chpasswd
+	fFixOwnership "${u}"
+
+	if ((enc)); then
+		## Lock it again. It gets unlocked at login.
+		zfs unmount "${ds}"
+		zfs unload-key "${ds}"
+		fSay "Done. '${u}' has an encrypted home, unlocked at login."
+	else
+		fSay "Done. '${u}' has a plain home dataset."
+	fi
+}
+
+fCmdPasswd(){
+	local -r u="${1:-}"
+	[[ -n "${u}" ]]  ||  fDie "Missing user name."
+	fUserExists "${u}"  ||  fDie "No user '${u}'."
+	local -r parent="$(fHomeParent)"
+	local -r ds="${parent}/${u}"
+	local encRoot=""
+	encRoot="$(zfs get -H -o value encryptionroot "${ds}" 2>/dev/null || true)"
+
+	if [[ -z "${encRoot}" || "${encRoot}" == "-" ]]; then
+		passwd "${u}"
+		return
+	fi
+	[[ "${encRoot}" == "${ds}" ]]  ||  fDie "'${ds}' inherits its key from '${encRoot}'. Not a per-user key; change it by hand."
+
+	local -i loadedHere=0
+	if [[ "$(zfs get -H -o value keystatus "${ds}")" != "available" ]]; then
+		local oldPwd=""
+		read -r -s -p "Current password for '${u}': " oldPwd; echo
+		fZfsKeyFor "${oldPwd}" | zfs load-key "${ds}"  ||  fDie "Wrong current password (the home's key didn't load)."
+		loadedHere=1
+	fi
+
+	local newPwd=""
+	fReadNewPassword "${u}"
+
+	fSay "Changing the ZFS key of '${ds}'"
+	fZfsKeyFor "${newPwd}" | zfs change-key -o keyformat=passphrase -o keylocation=prompt "${ds}"
+	fSay "Changing the login password"
+	if ! printf '%s:%s\n' "${u}" "${newPwd}" | chpasswd; then
+		echo "${meName}: WARNING: the ZFS key changed, but the login password didn't. Run this again before '${u}' logs out." >&2
+		exit 1
+	fi
+	((loadedHere))  &&  zfs unload-key "${ds}" 2>/dev/null || true
+	fSay "Done. Password and home key both changed."
+}
+
+fCmdMigrate(){
+	local -r u="${1:-}"
+	[[ -n "${u}" ]]  ||  fDie "Missing user name."
+	fUserExists "${u}"  ||  fDie "No user '${u}'."
+	fIsLoggedIn "${u}"  &&  fDie "'${u}' is logged in. Log them out first."
+	local -r parent="$(fHomeParent)"
+	local -r ds="${parent}/${u}"
+	local -r home="/home/${u}"
+	local -r stamp="$(date +%Y%m%d-%H%M%S)"
+
+	local enc=""
+	enc="$(zfs get -H -o value encryption "${ds}" 2>/dev/null || true)"
+	[[ -n "${enc}" && "${enc}" != "off" ]]  &&  fDie "'${ds}' is already encrypted."
+	[[ -d "${home}" ]]  ||  fDie "'${home}' doesn't exist."
+	command -v rsync &>/dev/null  ||  fDie "rsync isn't installed."
+
+	local newPwd=""
+	echo "The new encrypted home is unlocked with this login password, so it replaces the current one."
+	fReadNewPassword "${u}"
+
+	local -r tmpDs="${parent}/${u}_migrating-${stamp}"
+	local -r tmpMnt="/run/${meName}-${u}-${stamp}"
+	fSay "Creating encrypted dataset, mounted at '${tmpMnt}' for the copy"
+	fZfsKeyFor "${newPwd}" | zfs create -o encryption=aes-256-gcm -o keyformat=passphrase -o keylocation=prompt -o pbkdf2iters=600000 \
+		-o canmount=noauto -o mountpoint="${tmpMnt}" -o "${custProp_UserName}=${u}" -o org.openzfs.systemd:ignore=on "${tmpDs}"
+	zfs mount "${tmpDs}"
+
+	fSay "Copying '${home}'"
+	rsync -aHAX --numeric-ids "${home}/" "${tmpMnt}/"
+
+	## Move the old home out of the way, keeping it.
+	local -r oldKeep="${home}.pre-encrypt-${stamp}"
+	if zfs list -H "${ds}" &>/dev/null; then
+		fSay "Keeping old dataset as '${ds}_pre-encrypt-${stamp}' (canmount=noauto)"
+		zfs unmount "${ds}"
+		zfs rename "${ds}" "${ds}_pre-encrypt-${stamp}"
+		zfs set canmount=noauto mountpoint="${oldKeep}" "${ds}_pre-encrypt-${stamp}"
+		## tkz_zfs-mount leaves mountpoint dirs immutable and empty; free the name for the new mount.
+		[[ -d "${home}" ]]  &&  { chattr -i "${home}" 2>/dev/null || true; rmdir "${home}" 2>/dev/null || true; }
+	else
+		fSay "Keeping old folder as '${oldKeep}'"
+		chattr -i "${home}" 2>/dev/null || true
+		mv "${home}" "${oldKeep}"
+	fi
+
+	fSay "Putting the encrypted dataset at '${home}'"
+	zfs unmount "${tmpDs}"
+	zfs rename "${tmpDs}" "${ds}"
+	zfs set mountpoint="${home}" "${ds}"
+	zfs mount "${ds}"
+	rmdir "${tmpMnt}" 2>/dev/null || true
+
+	## The cache, tmp and var subfolders become their own datasets. Move what was copied into them.
+	local c=""
+	for c in "${encChildren[@]}"; do
+		if [[ -d "${home}/${c}" ]]; then mv "${home}/${c}" "${home}/${c}.migrating"; fi
+		zfs create -o canmount=on -o mountpoint="${home}/${c}" -o com.sun:auto-snapshot=false "${ds}/${c}"
+		if [[ -d "${home}/${c}.migrating" ]]; then
+			( shopt -s dotglob nullglob; mv "${home}/${c}.migrating"/* "${home}/${c}/" ) || true
+			rmdir "${home}/${c}.migrating" 2>/dev/null || true
+		fi
+	done
+
+	printf '%s:%s\n' "${u}" "${newPwd}" | chpasswd
+	fFixOwnership "${u}"
+	zfs unmount "${ds}"
+	zfs unload-key "${ds}"
+
+	fSay "Done. '${u}' now has an encrypted home."
+	echo "The old home is still there, as '${oldKeep}' or its dataset. Delete it after '${u}' has logged in and checked their files."
+}
+
+fCmdStatus(){
+	local -r parent="$(fHomeParent)"
+	local only="${1:-}"
+	printf '%-14s %-12s %-12s %-8s %s\n' USER ENCRYPTED KEY MOUNTED DATASET
+	local name="" enc="" key="" mounted=""
+	while IFS=$'\t' read -r name enc key mounted; do
+		[[ "${name}" == "${parent}" ]] && continue
+		local u="${name#"${parent}"/}"
+		[[ "${u}" == */* ]] && continue
+		[[ -n "${only}" && "${u}" != "${only}" ]] && continue
+		printf '%-14s %-12s %-12s %-8s %s\n' "${u}" "${enc}" "${key}" "${mounted}" "${name}"
+	done < <(zfs list -H -r -t filesystem -o name,encryption,keystatus,mounted "${parent}")
+}
+
+fMain(){
+	local -r cmd="${1:-}"
+	case "${cmd}" in
+		''|-h|--help|help) fShowHelp; return 0 ;;
+	esac
+	((EUID == 0))  ||  fDie "Must run as root."
+	shift
+	case "${cmd}" in
+		add)     fCmdAdd "$@" ;;
+		passwd)  fCmdPasswd "$@" ;;
+		migrate) fCmdMigrate "$@" ;;
+		status)  fCmdStatus "$@" ;;
+		*)       fShowHelp; fDie "Unknown command '${cmd}'." ;;
+	esac
+}
+
+fMain "$@"
+
+
+##	Copyright © 2026 t00mietum
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+
+##	History:
+##		- 20261011 tt: Created. add, passwd, migrate, status.

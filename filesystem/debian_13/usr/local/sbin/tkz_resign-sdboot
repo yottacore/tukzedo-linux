@@ -1,0 +1,57 @@
+#!/bin/bash
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+
+##	Purpose:
+##		- Re-sign the systemd-boot copies on the ESP with the MOK key, if any lost their signature.
+##		- 'bootctl update' (run by the systemd-boot package on upgrades) replaces every copy it recognizes
+##		  as systemd-boot with the new, unsigned build. That includes the 'grubx64.efi' files shim loads.
+##		  With Secure Boot on, shim then refuses them and the machine doesn't boot.
+##		- tkz_rebuild-uki signs them too, but only runs on kernel updates. This runs after every dpkg run,
+##		  via /etc/apt/apt.conf.d/99-tkz-resign-sdboot, and does nothing when the signatures are fine.
+##	Copyright and license ...: Toward bottom of this file.
+
+set -euo pipefail
+
+declare -r meName="$(basename "${0}")"
+declare -r MOK_KEY="/etc/mok/mok.key"
+declare -r MOK_CERT="/etc/mok/mok.crt"
+declare -r SYSTEMD_BOOT_SRC="/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+declare -r ESP_DIR="/boot/efi"
+declare -ra sdbootCopies=(
+	"${ESP_DIR}/EFI/debian/grubx64.efi"
+	"${ESP_DIR}/EFI/BOOT/grubx64.efi"
+	"${ESP_DIR}/EFI/systemd/systemd-bootx64.efi"
+)
+
+fMain(){
+	((EUID == 0))  ||  { echo "${meName}: must run as root." >&2; return 1; }
+	## Quietly do nothing on systems this doesn't apply to.
+	{ [[ -f "${MOK_KEY}" ]] && [[ -f "${MOK_CERT}" ]] && [[ -f "${SYSTEMD_BOOT_SRC}" ]]; }  ||  return 0
+	command -v sbverify &>/dev/null  &&  command -v sbsign &>/dev/null  ||  return 0
+	mountpoint -q "${ESP_DIR}"  ||  { echo "${meName}: '${ESP_DIR}' isn't mounted; can't check systemd-boot signatures." >&2; return 0; }
+
+	local nextEfi=""
+	local -i rc=0
+	for nextEfi in "${sdbootCopies[@]}"; do
+		[[ -f "${nextEfi}" ]]  ||  continue
+		sbverify --cert "${MOK_CERT}" "${nextEfi}" &>/dev/null  &&  continue
+		echo "${meName}: re-signing '${nextEfi}'."
+		if sbsign --key "${MOK_KEY}" --cert "${MOK_CERT}" --output "${nextEfi}.tmp" "${SYSTEMD_BOOT_SRC}" &>/dev/null  &&  mv -f "${nextEfi}.tmp" "${nextEfi}"; then
+			logger -t "${meName}" "Re-signed '${nextEfi}'." 2>/dev/null || true
+		else
+			rm -f "${nextEfi}.tmp"
+			echo "${meName}: ERROR: couldn't re-sign '${nextEfi}'. Run 'tkz_rebuild-uki' before rebooting." >&2
+			rc=1
+		fi
+	done
+	return "${rc}"
+}
+
+fMain "$@"
+
+##	Copyright © 2026 t00mietum
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+##	History:
+##		- 20261011 tt: Created.

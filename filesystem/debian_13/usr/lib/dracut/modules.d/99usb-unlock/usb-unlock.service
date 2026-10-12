@@ -1,0 +1,14 @@
+[Unit]
+Description=Unlock LUKS with a USB key file
+DefaultDependencies=no
+After=systemd-udevd.service systemd-udev-trigger.service
+Before=cryptsetup-pre.target
+Wants=cryptsetup-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/usb-unlock.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
