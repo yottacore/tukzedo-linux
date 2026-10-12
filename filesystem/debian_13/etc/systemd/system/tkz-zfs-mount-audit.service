@@ -1,8 +1,6 @@
-##	Once per boot, after the stock ZFS and fstab mounts are up: check that every mountpoint dir on the
-##	box is empty and immutable, mount any canmount=on dataset the stock path missed, and move anything
-##	hidden under a live mount into a quarantine folder next to it. Quiet when there is nothing to do.
-##	Runs before user sessions open, so a login's own mount pass (tkz_zfs-crypthome_login) finds the
-##	system already in order. Ordering only; a failure here never blocks logins.
+##	Once per boot, after the stock ZFS and fstab mounts: make every mountpoint dir empty and immutable,
+##	mount any canmount=on dataset that was missed, and quarantine anything hidden under a live mount.
+##	Runs before user sessions open. A failure here never blocks logins.
 
 [Unit]
 Description=Check and lock down ZFS and other mountpoint dirs

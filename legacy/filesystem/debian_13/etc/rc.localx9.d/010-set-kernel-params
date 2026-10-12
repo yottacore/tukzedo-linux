@@ -50,15 +50,15 @@ fMain() {
 	## The permanent home for these, which has to get baked into initrd, is /etc/modprobe.d/zfs.conf.
 	## These ephemeral settings live under '/sys/module/zfs/parameters/'.
 	fSetZfsParam "zfs_arc_max"                 2147483648  ## Maximum ARC memory cache size. See advice table at bottom of script.
-	fSetZfsParam "zfs_prefetch_disable"                 1  ## Free up cache space for known read/write, rather than speculative. "Has some know performance problems but usually best to not disable."
+	fSetZfsParam "zfs_prefetch_disable"                 1  ## Free up cache space for known read/write, rather than speculative. "Has some known performance problems but usually best to not disable."
 #	fSetZfsParam "zfs_top_maxinflight"                 64  ## Set maximum number of inflight IOs to a reasonable value; default=32; this number will vary for your environment.
 #	fSetZfsParam "zfs_resilver_delay"                   0  ## Number of ticks to delay resilver; default=?; default=2; set to zero for best resilver performance.
 #	fSetZfsParam "zfs_scrub_delay"                      0  ## Number of ticks to delay scrub; default=4; set to zero for best scrub performance.
 #	fSetZfsParam "zfs_resilver_min_time_ms"          6000  ## Resilver for x/1000 seconds per TXG; default=3000 (3 sec); raise for better resilver performance.
-#	fSetZfsParam "zfs_scan_min_time_ms"              4000  ## Min millisecs to scrub per txg; default=2000; increase for better scub/resilver performance??
+#	fSetZfsParam "zfs_scan_min_time_ms"              4000  ## Min millisecs to scrub per txg; default=2000; increase for better scrub/resilver performance??
 #	fSetZfsParam "zfs_vdev_scrub_max_active"            4  ## How many vdevs to scrub at once.
-#	fSetZfsParam "zfs_scan_idle"                        5  ## idle window in clock ticks; default=50; decrease for better scub/resilver performance??
-#	fSetZfsParam "zfs_free_min_time_ms"               100  ## Mininum millisecs to free per txg; default=1000; decrease for better scub/resilver performance??
+#	fSetZfsParam "zfs_scan_idle"                        5  ## idle window in clock ticks; default=50; decrease for better scrub/resilver performance??
+#	fSetZfsParam "zfs_free_min_time_ms"               100  ## Minimum millisecs to free per txg; default=1000; decrease for better scrub/resilver performance??
 #	fSetZfsParam "zfs_no_scrub_prefetch"               0  ## Set to 1 to disable scrub prefetch; not clear what this does or helps.
 
 	## ZFS cache sizing advice table
@@ -103,7 +103,7 @@ fSetDiskSchedulers(){
 }
 
 fSetDiskScheduler(){
-	## Note: "deadline" is better for SSDs, but USB HDDs are being reported as non-rotional (i.e. SSD), so just user bfq for everything thats not NVMe.
+	## Note: "deadline" is better for SSDs, but USB HDDs are being reported as non-rotational (i.e. SSD), so just use bfq for everything that's not NVMe.
 	devID="$1"
 	isNvme=$2
 	isRotational=$3

@@ -45,7 +45,7 @@ _Grub has to go._
 This document exists to plan and document that process. It isn't necessarily intended to be a full-blown "how to remove Grub" guide.
 
 <!-- TOC ignore:true -->
-## Table of ontents
+## Table of contents
 
 <!-- TOC -->
 

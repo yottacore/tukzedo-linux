@@ -34,7 +34,7 @@ This is an easier way to brainstorm and prioritize tasks, before creating issues
 
 | Created  | Issue#                                                  |Score|Imp|Urg|Eff|Aff| Started  | by | Completed | Description | Notes
 |:---------|-------:                                                 |----:|--:|--:|--:|--:|:---------|:---|:----------|:------------|:------
-| 20260413 |                                                         | 2.0 | 1 | 2 | 3 |   |  | tt |  | Set `cachefile=none` on rpool, on every boot. Figure out the most logical and reliable place to do this (a `systemd` service may not be te beste.)
+| 20260413 |                                                         | 2.0 | 1 | 2 | 3 |   |  | tt |  | Set `cachefile=none` on rpool, on every boot. Figure out the most logical and reliable place to do this (a `systemd` service may not be the best.)
 | 20260413 |                                                         | 2.3 | 1 | 3 | 3 |   |  | tt |  | Find where rpool is first imported in init process, and add `-f` to it, to get around ZFS host ID and zfs.cache mismatch problems. At least until 'Boot-time filesystem mounting' task is finished.
 | 20260410 |                                                         | 2.3 | 1 | 2 | 4 |   |  | tt |  | ZFS user home encryption: Improve PAM script to unlock ZFS filesystem on login
 | 20260410 |                                                         | 2.3 | 1 | 2 | 4 |   |  | tt |  | ZFS user home encryption: Improve watchdog to close encrypted home folders after logout

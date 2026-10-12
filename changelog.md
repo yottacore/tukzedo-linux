@@ -15,17 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- `tkz_zfs-mount`: mounts a dataset tree the safe way (stray mountpoint contents quarantined, every mountpoint dir left empty and `chattr +i`, each dataset verified). `--audit-all` applies the immutable-mountpoint rule to every mountpoint on the box; `tkz-zfs-mount-audit.service` runs that once per boot. `--release` takes the flag off again. [20260907]
+- `tkz_zfs-mount` mounts a dataset tree and keeps every mountpoint dir empty and `chattr +i`. Stray files found in a mountpoint get moved to a quarantine folder, never deleted. `tkz-zfs-mount-audit.service` checks every mountpoint once per boot. [20260907]
 
 ### Changed
 
-- `tkz_zfs-crypthome_login` now calls `tkz_zfs-mount` instead of mounting itself, with a plain `zfs mount` fallback if the helper is missing. [20260907]
+- `tkz_zfs-crypthome_login` mounts through `tkz_zfs-mount`, and falls back to plain `zfs mount` if the helper is missing. [20260907]
+
+- The logout watchdog runs from a systemd timer every 5 minutes, plus a PAM `close_session` hook, so a home locks soon after its user logs out. This replaces the hourly cron job. A run that hangs gets killed by the unit's start timeout. [20260907]
 
 ### Removed
-
-### Changed
-
-- Logout watchdog runs from a systemd timer every 5 minutes, plus a PAM `close_session` hook that locks a home the moment its user logs out. Replaces the hourly cron job; a wedged run is now killed by the unit's start timeout. [20260907]
 
 ### Other work
 -->
@@ -50,6 +48,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Finished first full project structure [20260416]
 
-- `guides/.../cloning.md` now has all the steps in it from the original `bash` format, but most are HTML-commented out because the formatting break `.md`. [≅20260414]
+- `guides/.../cloning.md` now has all the steps in it from the original `bash` format, but most are HTML-commented out because the formatting breaks `.md`. [≅20260414]
 
-- `guides/.../creation.md` now has all the steps in it from the original `bash` format, but most are HTML-commented out because the formatting break `.md`. [20260415]
+- `guides/.../creation.md` now has all the steps in it from the original `bash` format, but most are HTML-commented out because the formatting breaks `.md`. [20260415]

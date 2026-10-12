@@ -81,7 +81,7 @@ Unless you are running a very basic system that has no full-drive encryption, no
 
 - __Btrfs__: Btrfs imports devices only one way - arguably more robustly and reliably than ZFS: by scanning for `fsid` and `devid`s written to the superblock of every device. It survives moving and other hardware changes like ZFS's `/dev/disk/by-partlabel`, but harder to accidentally change by users. And unlike ZFS it's doesn't offer other import methods (by default no less) that can and do change.
 
-	But this also means the same problems that Luks and LVM suffer from - Btrfs does as well. And like LVM, the behavior of duplicate devices is not well-defined nor predicatable.
+	But this also means the same problems that Luks and LVM suffer from - Btrfs does as well. And like LVM, the behavior of duplicate devices is not well-defined nor predictable.
 
 - __SystemD__: This is a per-host unique ID used by some SystemD services, that exists as a 128-bit hex string in `/etc/machine-id`.
 
@@ -155,8 +155,8 @@ Systems installed directly onto basic filesystems like ext4 present few cloning 
 
 - Attaching real drives to a virtual machine is trivially easy with most VM products. Whether the drives are connected to the real host via USB adapter, or directly to native interfaces such as as NVMe or SATA. (One exception is VirtualBox, and is one of its few weak areas compared to other products. It's possible, just not as easy or robust.) It's easy in:
 
-	- Linux: "Virtual Machine Manager" for KVM/QEMU/Libvirt (your most likely and arguably best solution), or VMware Worstation.
-	- Windows: Windows Hyper-V Manager, or VMware Worstation.
+	- Linux: "Virtual Machine Manager" for KVM/QEMU/Libvirt (your most likely and arguably best solution), or VMware Workstation.
+	- Windows: Windows Hyper-V Manager, or VMware Workstation.
 	- macOS: UTM, or VMware Fusion
 
 - Attach your recovery drive or image, clone source, and target to the VM. Either via NVMe-to-USB and/or SATA-to-USB adapters, or less ideally directly to native NVMe or SATA buses on your real host hardware. (Either way, ultimately passing through to the VM.)
@@ -173,7 +173,7 @@ Systems installed directly onto basic filesystems like ext4 present few cloning 
 
 - __Boot into your recovery image__.
 
-	- Install prerequisits into you recovery environment (assuming `apt` from here on):
+	- Install prerequisites into your recovery environment (assuming `apt` from here on):
 
 		~~~bash
 		sudo apt install git subversion coreutils
@@ -216,7 +216,7 @@ Systems installed directly onto basic filesystems like ext4 present few cloning 
 		- Notes:
 			- This can and will be done non-destructively.
 			- This works just as well on a virtual disk image as a real block device, and will survive the copy from .img to physical.
-	- Reboot into the new system (in a VM) to make sure the sytem works with the new GPT UUIDS.
+	- Reboot into the new system (in a VM) to make sure the system works with the new GPT UUIDS.
 - Change LUKS2 identifiers, names, and references
 	- Reboot back into your rescue image, drive, or live iso.
 	- Change the Luks UUID and all references.

@@ -3,11 +3,10 @@
 
 ##	Purpose:
 ##		- Re-sign the systemd-boot copies on the ESP with the MOK key, if any lost their signature.
-##		- 'bootctl update' (run by the systemd-boot package on upgrades) replaces every copy it recognizes
-##		  as systemd-boot with the new, unsigned build. That includes the 'grubx64.efi' files shim loads.
-##		  With Secure Boot on, shim then refuses them and the machine doesn't boot.
-##		- tkz_rebuild-uki signs them too, but only runs on kernel updates. This runs after every dpkg run,
-##		  via /etc/apt/apt.conf.d/99-tkz-resign-sdboot, and does nothing when the signatures are fine.
+##		- A systemd-boot upgrade runs 'bootctl update', which overwrites them, 'grubx64.efi' included, with
+##		  an unsigned build. With Secure Boot on, shim then won't load them.
+##		- Runs after every dpkg run, via /etc/apt/apt.conf.d/99-tkz-resign-sdboot. tkz_rebuild-uki only
+##		  runs on kernel updates.
 ##	Copyright and license ...: Toward bottom of this file.
 
 set -euo pipefail

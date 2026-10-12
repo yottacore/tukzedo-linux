@@ -1,5 +1,5 @@
 #!/bin/bash
-#  shellcheck disable=2001  ## Complaining about use of sed istead of bash search & replace.
+#  shellcheck disable=2001  ## Complaining about use of sed instead of bash search & replace.
 #  shellcheck disable=2004  ## Inappropriate complaining of "$/${} is unnecessary on arithmetic variables."
 #  shellcheck disable=2012  ## 'Use find instead of ls to better handle non-alphanumeric filenames.'
 #  shellcheck disable=2034  ## Unused variables.
@@ -54,8 +54,7 @@ Kernel command line is sourced from /etc/kernel/uki-cmdline.conf.
 }
 
 fParseArgs(){
-	## Validate all args up-front - before the root check, logging, and any system
-	## mutation - so a bad invocation fails immediately, not partway through a rebuild.
+	## Runs before the root check and logging, so bad args fail right away.
 	## Populates top-level ${argParse_doAll} and ${argParse_kernelVersion}.
 	local nextArg=""
 	for nextArg in "$@"; do
@@ -87,9 +86,7 @@ fParseArgs(){
 }
 
 fRequireRoot(){
-	## Refuse to run unless we're actually root.
-	## Called before the logging block below, because that block writes to '/var/log' and would
-	## otherwise be the first thing to fail, with a far less obvious error message.
+	## Called before the logging block, which writes to '/var/log' and would fail first with a vaguer error.
 	((EUID == 0)) && return 0
 	echo -e "\nERROR in ${meName}: Must be run as root (EUID 0), but is running as '$(id -un 2>/dev/null || echo "uid ${EUID}")'."  >&2
 	echo -e "Try: sudo ${mePath} ${*}\n"                                                                                          >&2
@@ -146,7 +143,7 @@ fMain(){
 	## List of filed, folders, and content to check for before building, and modules to for after.
 	local -a requiredModules=() #............................: List of modules that must be in UKI .efi files.
 	local -a forbiddenModules=() #...........................: List of modules that cannot be in UKI .efi files.
-	local -a requiredOrForbiddenFilesDirsAndOrContent=() #...: Each array item contains: isForbidded [REQUIRE or FORBID], fileOrDirPath [req str], matchRegex [opt str]
+	local -a requiredOrForbiddenFilesDirsAndOrContent=() #...: Each array item contains: isForbidden [REQUIRE or FORBID], fileOrDirPath [req str], matchRegex [opt str]
 	fPopulateCheckArrays
 	readonly requiredModules  forbiddenModules  requiredOrForbiddenFilesDirsOrContent
 
@@ -157,8 +154,7 @@ fMain(){
 	## If not --all, and no version specified, assume current
 	{ ((! doAll)) && [[ -z "${kernelVersion_t3afd}" ]]; } && kernelVersion_t3afd="$(uname -r)"
 
-	## Fail fast if the requested kernel doesn't exist, before any system state is touched
-	## (fBuild_UKI re-checks, but by then the ZFS cachefile has already been cleared).
+	## Check before the ZFS cachefile gets cleared. fBuild_UKI checks again, but too late for that.
 	if ((! doAll)) && [[ ! -f "/boot/vmlinuz-${kernelVersion_t3afd}" ]]; then
 		echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No such kernel: '/boot/vmlinuz-${kernelVersion_t3afd}'. Installed kernels:" >&2
 		ls /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-|    |' | sort -V >&2 || true
@@ -183,19 +179,13 @@ fMain(){
 			for nextPool in $(zpool list -H -o name 2>/dev/null); do sudo zpool set cachefile=none "${nextPool}" || true; done
 			[[ -f /etc/zfs/zpool.cache ]] && sudo rm -f /etc/zfs/zpool.cache
 		fi
-		## NOTE: Do NOT mask 'boot-efi.mount' here. This script used to, on the theory that the
-		## generated unit mounted '/boot/efi' before the ZFS pools were imported, after which the ZFS
-		## '/boot' dataset mounted over the top and shadowed it. That ordering is now handled properly
-		## by 'x-systemd.after=zfs-import.target' on the '/boot/efi' line in '/etc/fstab' - which
-		## fPopulateCheckArrays() already asserts is present - so the mask is obsolete.
-		##
-		## It was also actively harmful, in two ways that both hid well:
-		##   1. It silently re-masked the unit after every kernel upgrade, undoing any manual unmask,
-		##      and leaving 'tkz-insure-efi-mount.service' (which declares After=/Wants=boot-efi.mount)
-		##      to repair the ESP by hand ~15s late on every single boot.
-		##   2. With no systemd unit owning the mount, udisks2 treats the ESP as fair game: on behalf
-		##      of 'fwupd-refresh.service' it would mount and then UNMOUNT '/boot/efi' out from under
-		##      the running system, minutes after the repair had succeeded.
+		## Don't mask 'boot-efi.mount' here. It used to be masked so '/boot/efi' wouldn't mount before the
+		## pools were imported. 'x-systemd.after=zfs-import.target' in '/etc/fstab' handles that now, and
+		## fPopulateCheckArrays() checks for it. The mask also did harm:
+		##   1. It re-masked the unit on every kernel upgrade, so 'tkz-insure-efi-mount.service' had to
+		##      repair the ESP about 15s late on every boot.
+		##   2. With no unit owning the mount, udisks2 (for 'fwupd-refresh.service') would mount and then
+		##      unmount '/boot/efi' from under the running system.
 	fi
 	sleep 1
 
@@ -371,7 +361,7 @@ __fPopulateContentCheckArray(){
 	## Args
 	local    doReqOrForb="${1:-}"      ; shift || true #..........: [REQUIRED]: 'R[EQUIRE]' or 'F[ORBID]'.
 	local    searchDir="${1:-}"        ; shift || true #..........: [REQUIRED]: Directory to check for existence. If $grepExp not "", also searches files for regex match.
-	local -r searchFilespec="${1:-}"   ; shift || true #..........: [optional]: Filspec to check for existence. Can contain `find`-style glob chars, e.g. '*'. If $grepExp not "", also searches those|that file(s) for regex match.
+	local -r searchFilespec="${1:-}"   ; shift || true #..........: [optional]: Filespec to check for existence. Can contain `find`-style glob chars, e.g. '*'. If $grepExp not "", also searches those|that file(s) for regex match.
 	local -r grepExp="${1:-}"          ; shift || true #..........: [optional]: Regex match.
 	## Variables
 	local tmpStr=""
@@ -521,7 +511,7 @@ fBuild_UKI() {
 	## Constants
 	local -r UKI_FILESPEC="${UKI_DIR}/debian-${kernelVersion_t3afe}.efi"
 
-	## Varialbes
+	## Variables
 	local kernelCommandParms=""
 
 	## Validate
@@ -577,7 +567,7 @@ fCheckModuleContents(){
 	allModList="$(lsinitrd "${modFile}" 2>/dev/null | grep -P ' root[ ]+root ')"
 	[[ -z "${allModList}" ]] && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No modules were listed in '${modFile}'. Could be a bug in function?\n" >&2 ; return 1; }
 
-	## Checkexistence of required modules and build list
+	## Check existence of required modules and build list
 	flaggedResults=0
 	outStr=""
 	for sItem in "${requiredModules[@]}"; do
@@ -752,8 +742,7 @@ declare mePath="${0}"
 declare meName="$(basename "${mePath}")"
 declare serialDT="$(date '+%Y%m%d-%H%M%S')"
 
-## Parse and validate args first: '--help' must work unprivileged, and a bad
-## invocation should fail before the root check, logging, and any system mutation.
+## Args first, so '--help' works unprivileged and bad args fail before anything changes.
 declare -i argParse_doAll=0
 declare    argParse_kernelVersion=""
 fParseArgs  "${@}"
@@ -792,23 +781,19 @@ echo
 ##			- Added `/boot` backup functionality, and retained backup pruning.
 ##		- 20260812 JC:
 ##			- fSetBootKernelDefaultToLatestMinusOne(): Sort UKIs by version (`sort -Vr`) instead of by
-##			  mtime. fSign_EFIs() rewrites every UKI just beforehand, so mtimes were all identical and
-##			  the numeric sort fell back to lexical order - which selected the OLDEST kernel as default.
-##			- fSetBootKernelDefaultToLatestMinusOne(): Use sudo when writing to loader.conf, like the
-##			  rest of the script does for privileged writes.
+##			  mtime. fSign_EFIs() rewrites every UKI just before, so all mtimes matched and the oldest
+##			  kernel got picked as default.
+##			- fSetBootKernelDefaultToLatestMinusOne(): Use sudo when writing to loader.conf.
 ##		- 20260813 JC:
-##			- Added fRequireRoot(): fail immediately if not running as root, rather than partway
-##			  through with unrelated-looking errors. Called before the logging block, since that
-##			  writes to '/var/log' and would otherwise fail first.
+##			- Added fRequireRoot(), so it fails right away when not root, instead of partway through
+##			  with confusing errors.
 ##		- 20260814 JC:
 ##			- Removed the 'systemctl mask boot-efi.mount' added on 20260314-18. The fstab entry's
-##			  'x-systemd.after=zfs-import.target' supersedes it, and re-masking on every run was
-##			  silently reverting the unmask, forcing a late hand-repair on every boot and letting
-##			  udisks2/fwupd unmount the ESP. See the NOTE in fMain() before reintroducing it.
-##			- Added '-h|--help' (fShowHelp(), works unprivileged), and moved arg parsing to
-##			  fParseArgs(), called before the root check: unknown options, conflicting args, and a
-##			  bare 'all' (with a "did you mean '--all'?" hint) now fail immediately. A nonexistent
-##			  kernel version also fails at the top of fMain(), before the ZFS cachefile is cleared.
+##			  'x-systemd.after=zfs-import.target' replaces it, and re-masking on every run undid the
+##			  unmask and let udisks2/fwupd unmount the ESP. See the note in fMain() before adding it back.
+##			- Added '-h|--help', and moved arg parsing to fParseArgs(), before the root check. Unknown
+##			  options, conflicting args and a bare 'all' fail right away. So does a kernel version that
+##			  doesn't exist, before the ZFS cachefile is cleared.
 ##		- 20261011 tt:
 ##			- Clear the cachefile on whatever pools are imported, instead of two hard-coded pool names.
 ##			- Dropped the bpool force-import module checks; there's no bpool anymore.

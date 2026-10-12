@@ -5,10 +5,8 @@
 ##	Purpose:
 ##		- Applies the kernel/system tunables declared in '/etc/tukzedo/tunables.conf', and can generate
 ##		  the equivalent native drop-in files from that same declaration.
-##		- The point is a single source of truth. Before this, the ZFS module parameters existed in BOTH
-##		  a hand-edited '/etc/modprobe.d/zfs.conf' and an imperative boot script that re-set them at
-##		  runtime, while the sysctls existed only inside that script - so 'sysctl --system' did not
-##		  reproduce the system's own tuning.
+##		- One place to set them. Before this, ZFS module parameters were set in both '/etc/modprobe.d/zfs.conf'
+##		  and a boot script, and the sysctls only in that script, so 'sysctl --system' didn't match.
 ##	Syntax:
 ##		tkz_apply-tunables  [options]
 ##	Options:
@@ -18,7 +16,7 @@
 ##		    --emit-native ..: (Re)generate the native drop-in files from the config. Existing generated
 ##		                      files are overwritten; nothing else is touched.
 ##		    --config <path> : Use a different config file. Default: '${configFile}'.
-##		-q, --quiet ........: Only report values that actually changed (and problems).
+##		-q, --quiet ........: Only report values that changed (and problems).
 ##		-h, --help .........: This.
 ##	Exit codes:
 ##		0 = success (or, with '--check', no drift).
@@ -26,19 +24,15 @@
 ##		2 = usage or config error.
 ##	Notes:
 ##		- Runs as root to apply; re-executes via sudo if needed. '--check' needs no privileges.
-##		- Every setting is applied idempotently and reported as was → now, so a boot log shows exactly
-##		  what this changed and what it left alone.
-##		- Where a native mechanism exists, '--emit-native' writes it, because the native mechanism
-##		  catches cases a boot-time script structurally cannot:
+##		- Each change is logged as old -> new.
+##		- '--emit-native' writes the native files too, since they cover cases a boot script can't:
 ##			sysctls .......: /etc/sysctl.d/60-tkz-tunables.conf      (so 'sysctl --system' agrees)
 ##			module params .: /etc/modprobe.d/tkz-tunables.conf       (so early boot / initrd agrees)
-##			  ... plus ....: /etc/dracut.conf.d/60-tkz-tunables.conf (so a GENERIC initrd includes it -
-##			                 with 'hostonly=no', dracut omits /etc/modprobe.d entirely, which silently
-##			                 leaves initrd-loaded modules such as 'zfs' on their default parameters)
-##			block devices .: /etc/udev/rules.d/60-tkz-tunables.rules (so HOTPLUGGED disks agree)
-##		- Built-in (non-modular) kernel code such as 'zswap' cannot be configured by '/etc/modprobe.d'
-##		  at all. For those, '--emit-native' prints the kernel command line entry to add instead of
-##		  generating a file that would silently do nothing.
+##			  ... plus ....: /etc/dracut.conf.d/60-tkz-tunables.conf (a 'hostonly=no' initrd leaves out
+##			                 /etc/modprobe.d, so 'zfs' would get default parameters)
+##			block devices .: /etc/udev/rules.d/60-tkz-tunables.rules (so hotplugged disks agree)
+##		- Built-in kernel code such as 'zswap' ignores '/etc/modprobe.d'. For those, '--emit-native'
+##		  prints the kernel command line entry to add instead.
 ##		- Normally invoked by 'tkz-apply-tunables.service' at boot:
 ##			journalctl -b -u tkz-apply-tunables.service
 ##	Copyright and license ...: Toward bottom of this file.
@@ -135,7 +129,7 @@ function fInsureRoot(){
 
 
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
-##	Config parsing. Deliberately tiny: '[section]' headers and 'key = value' lines,
+##	Config parsing. Kept small on purpose: '[section]' headers and 'key = value' lines,
 ##	with '#'-to-end-of-line comments. No quoting rules, no escapes, no includes.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
@@ -190,8 +184,7 @@ function fListModuleSections(){
 
 
 function fIsModuleBuiltIn(){
-	## A loadable module has '/sys/module/<name>/initstate'; built-in code does not. This matters because
-	## '/etc/modprobe.d' is only ever consulted by modprobe, so it cannot configure built-in code at all.
+	## Only loadable modules have '/sys/module/<name>/initstate'. modprobe.d can't touch built-in code.
 	[[ -d "/sys/module/${1}" ]]  &&  [[ ! -e "/sys/module/${1}/initstate" ]]
 }
 
@@ -208,7 +201,7 @@ function fSquashSpaces(){
 
 
 function fApplyToFile(){
-	## Sets the single-value pseudo-file $1 to $2, reporting was → now. $3 is a human label for logs.
+	## Sets the single-value pseudo-file $1 to $2, logging old -> new. $3 is a label for logs.
 	local -r targetFile="$1"
 	local -r wantValue="$2"
 	local -r label="$3"
@@ -233,7 +226,7 @@ function fApplyToFile(){
 	fi
 
 	if [[ "${isDryRun}" -eq 1 ]]; then
-		fLog "DRY RUN: would set ${label}: '${oldValue}' → '${wantValue}'."
+		fLog "DRY RUN: would set ${label}: '${oldValue}' -> '${wantValue}'."
 		return 0
 	fi
 
@@ -242,7 +235,7 @@ function fApplyToFile(){
 
 	if [[ "$(fSquashSpaces "${newValue}")" == "$(fSquashSpaces "${wantValue}")" ]]; then
 		countChanged=$((countChanged + 1))
-		fLog "${label}: '${oldValue}' → '${newValue}'"
+		fLog "${label}: '${oldValue}' -> '${newValue}'"
 	else
 		countFailed=$((countFailed + 1))
 		fLog "FAILED: ${label}: wanted '${wantValue}', still '${newValue}'. (Kernel rejected it?)"
@@ -255,7 +248,7 @@ function fApplySysctls(){
 	local nextKey="" nextValue=""
 	while IFS=$'\t' read -r nextKey nextValue; do
 		[[ -z "${nextKey}" ]]  &&  continue
-		## 'net.ipv4.tcp_mtu_probing' → '/proc/sys/net/ipv4/tcp_mtu_probing'
+		## 'net.ipv4.tcp_mtu_probing' -> '/proc/sys/net/ipv4/tcp_mtu_probing'
 		fApplyToFile "/proc/sys/${nextKey//.//}" "${nextValue}" "sysctl ${nextKey}"
 	done < <(fReadSection "sysctl")
 }
@@ -326,7 +319,7 @@ function fApplyBlockSchedulers(){
 			continue
 		fi
 
-		## The wanted scheduler may live in a module that simply isn't loaded yet (bfq, kyber).
+		## The scheduler may be in a module that isn't loaded yet (bfq, kyber).
 		if [[ " ${availableList//[\[\]]/ } " != *" ${wantScheduler} "* ]]; then
 			if [[ "${isCheckOnly}" -eq 1 || "${isDryRun}" -eq 1 ]]; then
 				fLog "NOTE: ${deviceName}: scheduler '${wantScheduler}' not currently available; would try 'modprobe ${wantScheduler}'."
@@ -347,7 +340,7 @@ function fApplyBlockSchedulers(){
 			continue
 		fi
 		if [[ "${isDryRun}" -eq 1 ]]; then
-			fLog "DRY RUN: would set ${deviceName} (${deviceClass}) scheduler: '${activeScheduler}' → '${wantScheduler}'."
+			fLog "DRY RUN: would set ${deviceName} (${deviceClass}) scheduler: '${activeScheduler}' -> '${wantScheduler}'."
 			continue
 		fi
 
@@ -355,7 +348,7 @@ function fApplyBlockSchedulers(){
 		activeScheduler="$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' < "${nextPath}/queue/scheduler")"
 		if [[ "${activeScheduler}" == "${wantScheduler}" ]]; then
 			countChanged=$((countChanged + 1))
-			fLog "${deviceName} (${deviceClass}) scheduler → '${activeScheduler}'"
+			fLog "${deviceName} (${deviceClass}) scheduler -> '${activeScheduler}'"
 		else
 			countFailed=$((countFailed + 1))
 			fLog "FAILED: ${deviceName}: scheduler is '${activeScheduler}', wanted '${wantScheduler}'."
@@ -392,8 +385,7 @@ function fWriteGenerated(){
 
 
 function fEmitNativeSysctl(){
-	## An empty section yields a header-only file, which is harmless and still documents where the
-	## values are supposed to come from - so there's no special case for "nothing configured".
+	## An empty section gives a header-only file, which is fine.
 	local nextKey="" nextValue=""
 	{
 		fGeneratedHeader
@@ -413,7 +405,7 @@ function fEmitNativeModprobe(){
 		while IFS= read -r nextModule; do
 			[[ -z "${nextModule}" ]]  &&  continue
 			if fIsModuleBuiltIn "${nextModule}"; then
-				## Emitting 'options <builtin> ...' would be silently ineffective, so say so instead.
+				## 'options <builtin> ...' would do nothing.
 				echo "## '${nextModule}' is built into the kernel, so modprobe options do not apply to it."
 				echo "## Put these on the kernel command line instead (this distro: /etc/kernel/uki-cmdline.conf):"
 				while IFS=$'\t' read -r nextKey nextValue; do
@@ -431,7 +423,7 @@ function fEmitNativeModprobe(){
 		done < <(fListModuleSections)
 	} | fWriteGenerated "${generatedModprobeFile}"
 
-	## Built-in parameters need a human decision about the kernel command line; make that impossible to miss.
+	## Built-in parameters need a hand edit of the kernel command line.
 	while IFS= read -r nextModule; do
 		fIsModuleBuiltIn "${nextModule}"  ||  continue
 		while IFS=$'\t' read -r nextKey nextValue; do
@@ -448,8 +440,8 @@ function fEmitNativeUdev(){
 	local nonRotationalScheduler="$(fGetConfiguredScheduler nonrotational)"
 	{
 		fGeneratedHeader
-		echo "##	Applies the configured I/O scheduler to every whole disk, at add AND change events - so"
-		echo "##	drives plugged in after boot get the same treatment, which a boot-time loop can never do."
+		echo "##	Sets the configured I/O scheduler on every whole disk, on add and change events, so"
+		echo "##	drives plugged in after boot get it too."
 		echo
 		[[ -n "${nvmeScheduler}" ]]  &&  \
 			echo "ACTION==\"add|change\", SUBSYSTEM==\"block\", ENV{DEVTYPE}==\"disk\", KERNEL==\"nvme*\", ATTR{queue/scheduler}=\"${nvmeScheduler}\""
@@ -462,9 +454,7 @@ function fEmitNativeUdev(){
 
 
 function fEmitNativeDracut(){
-	## A generic (hostonly=no) initrd does NOT pick up '/etc/modprobe.d/', so on such a system the module
-	## parameters would silently never reach the module that the initrd itself loads - which is exactly
-	## the case for ZFS on a ZFS root. 'install_items' is dracut's supported way to force a file in.
+	## A hostonly=no initrd leaves out '/etc/modprobe.d/', so zfs would load with defaults. install_items forces it in.
 	local -i haveLoadableModules=0
 	local nextModule=""
 	while IFS= read -r nextModule; do
@@ -477,9 +467,8 @@ function fEmitNativeDracut(){
 
 	{
 		fGeneratedHeader
-		echo "##	Forces the generated modprobe options into the initrd. Without this, a generic"
-		echo "##	(hostonly=no) dracut build omits '/etc/modprobe.d/' entirely, and any module the initrd"
-		echo "##	loads itself - notably 'zfs' on a ZFS root - comes up with default parameters."
+		echo "##	Forces the generated modprobe options into the initrd. A generic (hostonly=no) build"
+		echo "##	leaves out '/etc/modprobe.d/', so modules the initrd loads, like 'zfs', get default parameters."
 		echo
 		echo "install_items+=' ${generatedModprobeFile} '"
 	} | fWriteGenerated "${generatedDracutFile}"
@@ -493,14 +482,14 @@ function fEmitNative(){
 	fEmitNativeUdev
 	fEmitNativeDracut
 	if [[ "${isDryRun}" -eq 0 ]]; then
-		fLog "NOTE: module parameters reach EARLY boot only after an initrd rebuild ('tkz_rebuild-uki')."
+		fLog "NOTE: module parameters reach early boot only after an initrd rebuild ('tkz_rebuild-uki')."
 		fLog "NOTE: to apply the new udev rule without a reboot: udevadm control --reload && udevadm trigger --subsystem-match=block"
 	fi
 }
 
 
 function fReportConflictingModprobeFiles(){
-	## A second file setting the same module option is the exact duplication this tool exists to end.
+	## Warn about another file setting the same module option.
 	local nextModule="" nextKey="" nextFile=""
 	while IFS= read -r nextModule; do
 		fIsModuleBuiltIn "${nextModule}"  &&  continue
@@ -559,15 +548,10 @@ fMain "$@"
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 ## History:
 ##		- 20260813 JC: Created, replacing '/etc/rc.localx9.d/010-set-kernel-params' (retired to 'legacy/').
-##			- Values now live in a declarative config rather than being embedded in shell, so there is
-##			  one place to edit and 'sysctl --system' agrees with the system's actual tuning.
-##			- Ends the duplication where ZFS parameters were set both in '/etc/modprobe.d/zfs.conf' and
-##			  again at runtime by the boot script; '--emit-native' now generates that file's tkz half,
-##			  and conflicting definitions elsewhere are reported.
-##			- I/O schedulers are generated as a udev rule, so hotplugged disks are covered. The old
-##			  one-shot loop over '/sys/block/*' at boot could never see them.
-##			- Dropped the old "write 'cfq' first in case the kernel is too old" step, which threw an
-##			  I/O error into the boot log on every single boot of any modern kernel.
-##			- Recognizes built-in (non-modular) code such as 'zswap', for which '/etc/modprobe.d' is
-##			  silently useless, and reports the kernel command line entry to add instead.
+##			- Values live in a config file instead of shell, so 'sysctl --system' matches.
+##			- ZFS parameters were set both in '/etc/modprobe.d/zfs.conf' and by the boot script. '--emit-native'
+##			  now writes that file, and other files setting the same thing get reported.
+##			- I/O schedulers go in a udev rule, so hotplugged disks get them too.
+##			- Dropped the "write 'cfq' first" step, which logged an I/O error on every boot of a modern kernel.
+##			- Built-in code such as 'zswap' gets the kernel command line entry to add, since modprobe.d does nothing for it.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

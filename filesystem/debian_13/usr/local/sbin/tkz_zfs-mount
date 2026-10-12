@@ -6,9 +6,8 @@
 
 ##	Purpose:
 ##		Mount a ZFS dataset tree the safe way, and keep every mountpoint dir on this box empty and immutable.
-##		A mountpoint dir with 'chattr +i' cannot collect stray files while nothing is mounted on it, so a
-##		half-finished unmount, a failed mount, or a program that writes before the mount is up cannot
-##		leak data into the parent filesystem (or hide it under the mount later; 'overlay=on' is the default).
+##		With 'chattr +i', nothing can write into the dir while it's unmounted. So a failed mount, or a program
+##		that writes too early, can't leave files in the parent filesystem that later get hidden under the mount.
 ##	Modes:
 ##		tkz_zfs-mount [--dry-run] [--no-recurse] <dataset>
 ##			For the dataset and each child (parents first): skip canmount=off and mountpoint=none; if already
@@ -27,10 +26,8 @@
 ##		tkz_zfs-mount --release [--dry-run] <mountpoint-dir>
 ##			Remove +i from a mountpoint dir, mounted or not, so it can be renamed or removed.
 ##	How the raw dir is reached under a live mount:
-##		A non-recursive 'mount --bind' of the filesystem that holds the mountpoint shows that filesystem's own
-##		contents with nothing mounted on top. The mountpoint dir, and anything hidden in it, is then visible at
-##		the same relative path inside the bind. Works for any nesting depth; every mountpoint has exactly one
-##		holding filesystem.
+##		A non-recursive 'mount --bind' of the filesystem holding the mountpoint shows its contents with nothing
+##		mounted on top. The raw dir is at the same relative path inside the bind.
 ##	Notes:
 ##		- The +i flag lives in the holding filesystem, so it travels with snapshots and 'zfs send' of the parent.
 ##		  'zfs rename', a mountpoint change, or 'zfs destroy' leaves an immutable empty dir behind; use
@@ -57,7 +54,7 @@ declare -r lockFile="/run/lock/${meName}.lock"
 declare -r custProp_Mountpoint="x9.custom.automount:dir"  ## Only consulted when 'mountpoint' is 'legacy'.
 declare -r quarantineDirName=".tkz_premount-quarantine"
 
-## Filesystems whose dirs can carry the immutable flag. Anything else (cifs, vfat, tmpfs holding fs) is skipped.
+## Filesystems that support the immutable flag. Anything else (cifs, vfat, tmpfs holding fs) is skipped.
 declare -r flaggableFsTypes=" zfs btrfs ext4 ext3 ext2 xfs f2fs "
 ## Mount types that are never real data mounts.
 declare -r pseudoFsTypes=" proc sysfs devtmpfs devpts cgroup cgroup2 securityfs pstore efivarfs bpf debugfs tracefs configfs fusectl mqueue hugetlbfs binfmt_misc autofs rpc_pipefs nsfs overlay squashfs fuse.gvfsd-fuse fuse.portal "
@@ -161,11 +158,11 @@ function fQuarantineContents(){
 function fSecureRawDir(){
 	## $1: a raw mountpoint dir, reachable (not covered by a mount). Make it empty and immutable.
 	## $2: "quarantine" to move contents out, "report" to only warn about them.
-	## Returns non-zero if it could not be made empty, or if the holding filesystem cannot carry the flag.
+	## Returns non-zero if it could not be made empty, or if the holding filesystem doesn't support the flag.
 	local -r rawDir="$1"  onContents="${2:-quarantine}"  shown="${rawShown:-$1}"
 	local -r fsType="$(fHoldingFsType "${rawDir}")"
 	if [[ "${flaggableFsTypes}" != *" ${fsType} "* ]]; then
-		fLog "*  Skipping '${shown}': holding filesystem is '${fsType:-unknown}', which cannot carry the immutable flag."
+		fLog "*  Skipping '${shown}': holding filesystem is '${fsType:-unknown}', which doesn't support the immutable flag."
 		return 0
 	fi
 

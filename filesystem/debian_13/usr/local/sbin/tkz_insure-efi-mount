@@ -3,13 +3,11 @@
 #  shellcheck disable=2120  ## 'References arguments, but none are ever passed.' Valid function argument overloading.
 
 ##	Purpose:
-##		- Makes sure the EFI system partition is actually mounted and readable at its mountpoint
+##		- Makes sure the EFI system partition is mounted and readable at its mountpoint
 ##		  (default '/boot/efi'), and repairs it if not.
-##		- Exists because on layered setups - ZFS root, a separate '/boot', an ESP nested inside it - the
-##		  ESP can end up mounted but SHADOWED: a later mount over '/boot' hides the already-mounted
-##		  '/boot/efi' underneath it. The mountpoint then looks present-but-empty, and anything writing
-##		  kernels or UKIs there (notably 'tkz_rebuild-uki') silently writes into the wrong filesystem.
-##		  Fixing that requires unmounting the shadowed mount first, then remounting it.
+##		- With ZFS root and a separate '/boot' holding the ESP, a later mount over '/boot' can hide the
+##		  mounted '/boot/efi'. It then looks empty, and 'tkz_rebuild-uki' writes UKIs into the wrong
+##		  filesystem. The fix is to unmount the hidden mount, then mount it again.
 ##	Syntax:
 ##		tkz_insure-efi-mount  [mountpoint]  [options]
 ##	Options:
@@ -25,13 +23,10 @@
 ##		2 = usage error.
 ##	Notes:
 ##		- Runs as root. If invoked as a normal user it re-executes itself via sudo.
-##		- Prefers asking systemd to start the mount unit (so systemd's own view of the mount stays
-##		  correct), and only falls back to plain 'mount' if that fails or the unit is masked. NOTE that a
-##		  masked mount unit is itself worth fixing - see 'systemctl unmask <unit>' - since a masked unit
-##		  means systemd will never mount it at boot, leaving this script to do it late every time.
-##		- Deliberately refuses to act when the mountpoint holds real files while unmounted: that means
-##		  someone wrote into the bare directory, and mounting over it would hide data rather than lose it,
-##		  but would also leave that data stranded and invisible. That needs a human.
+##		- Starts the systemd mount unit, so systemd's view of the mount stays right, and falls back to plain
+##		  'mount' if that fails or the unit is masked. A masked unit never mounts at boot, so unmask it.
+##		- Won't act when the unmounted mountpoint has files in it. Mounting over them would hide them, so
+##		  that's left to sort out by hand.
 ##		- Normally invoked by 'tkz-insure-efi-mount.service' (in this repo under
 ##		  'filesystem/debian_13/etc/systemd/system/'). Progress is logged to the journal both as unit
 ##		  output and as structured 'tkz_startup-log' records:
@@ -116,8 +111,7 @@ function fParseArgs(){
 function fInsureRoot(){
 	[[ "${EUID}" -eq 0 ]]  &&  return 0
 
-	## Modes that never change anything don't need root: reading mount state is unprivileged, and
-	## silently prompting for a password just to print help would be obnoxious.
+	## Read-only modes don't need root, and a password prompt just to print help would be annoying.
 	local nextArg=""
 	for nextArg in "$@"; do
 		case "${nextArg,,}" in
@@ -138,8 +132,7 @@ function fInit(){
 
 
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
-##	State inspection. Each of these answers exactly one question, so the decision
-##	logic below reads as prose rather than as a wall of bracketed comparisons.
+##	State checks.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 function fIsMounted(){       mountpoint -q "${1}" 2>/dev/null; }
@@ -147,8 +140,8 @@ function fDirExists(){       [[ -d "${1}" ]]; }
 function fDirHasContents(){  [[ -n "$(ls -1A "${1}" 2>/dev/null || true)" ]]; }
 
 function fIsHealthy(){
-	## Healthy means: it exists, something is mounted on it, and that something isn't empty. An ESP is
-	## never legitimately empty - it has at least an 'EFI' directory - so empty means shadowed or wrong.
+	## Healthy: it exists, something is mounted on it, and it isn't empty. An ESP always has an 'EFI'
+	## folder, so empty means shadowed or wrong.
 	fDirExists      "${mountPoint}"  &&  \
 	fIsMounted      "${mountPoint}"  &&  \
 	fDirHasContents "${mountPoint}"
@@ -164,7 +157,7 @@ function fDescribeState(){
 
 
 function fWaitForHealthy(){
-	## Gives an in-flight mount a chance to land before we start intervening.
+	## Give a mount that's in progress time to finish.
 	local -i remaining="${waitSeconds}"
 	[[ "${remaining}" -le 0 ]]  &&  return 1
 	fLog "Waiting up to ${remaining}s for '${mountPoint}' to become healthy on its own ..."
@@ -198,8 +191,7 @@ function fTryUnmount(){
 	umount -R "${mountPoint}" 2>&1  ||  true
 	fIsMounted "${mountPoint}"  ||  return 0
 
-	## A lazy unmount detaches the tree even while something still holds it; acceptable here because the
-	## mount we're detaching is already unreachable (shadowed), so nothing can be usefully reading it.
+	## Lazy is OK here, since nothing can reach the shadowed mount anyway.
 	fLog "Still mounted; executing: umount -R --lazy '${mountPoint}'"
 	umount -R --lazy "${mountPoint}" 2>&1  ||  true
 	fIsMounted "${mountPoint}"  &&  return 1
@@ -213,11 +205,11 @@ function fTryMount(){
 		return 0
 	fi
 
-	## Preferred: let systemd do it, so its own state for the mount unit stays truthful.
+	## Let systemd do it, so its view of the mount unit stays right.
 	if [[ -n "${mountUnitName}" ]]; then
 		local unitLoadState="$(systemctl show "${mountUnitName}" -p LoadState --value 2>/dev/null || true)"
 		if [[ "${unitLoadState}" == "masked" ]]; then
-			fLog "NOTE: mount unit '${mountUnitName}' is MASKED, so systemd will never mount this at boot."
+			fLog "NOTE: mount unit '${mountUnitName}' is masked, so systemd will never mount this at boot."
 			fLog "NOTE: consider 'systemctl unmask ${mountUnitName}' so this repair stops being needed."
 		else
 			fLog "Executing: systemctl start '${mountUnitName}'"
@@ -256,9 +248,9 @@ function fRepair(){
 
 	## Shadowed: mounted, but reads as empty because a later mount covers it. Detach before remounting.
 	if fIsMounted "${mountPoint}"; then
-		fLog "'${mountPoint}' is mounted but reads as empty - it appears shadowed by a later mount."
+		fLog "'${mountPoint}' is mounted but reads as empty. It looks shadowed by a later mount."
 		if ! fTryUnmount; then
-			fLog "FAILED: could not unmount the shadowed '${mountPoint}' in order to remount it."
+			fLog "FAILED: could not unmount the shadowed '${mountPoint}' to remount it."
 			return 1
 		fi
 		fLog "Unmounted the shadowed mount."
@@ -281,11 +273,11 @@ function fMain(){
 	local -i exitCode=0
 
 	if fIsHealthy; then
-		fLog "Nothing to do - '${mountPoint}' is mounted and readable."
+		fLog "Nothing to do. '${mountPoint}' is mounted and readable."
 	elif fWaitForHealthy; then
 		fLog "'${mountPoint}' became healthy on its own while waiting."
 	elif [[ "${isCheckOnly}" -eq 1 ]]; then
-		fLog "CHECK ONLY: '${mountPoint}' is NOT healthy. (Re-run without '--check' to attempt a repair.)"
+		fLog "CHECK ONLY: '${mountPoint}' is not healthy. (Re-run without '--check' to attempt a repair.)"
 		exitCode=1
 	elif fRepair; then
 		if [[ "${isDryRun}" -eq 1 ]]; then
@@ -315,17 +307,13 @@ fMain "$@"
 ##		- 20260318 JC: Created.
 ##		- 20260326 JC: Only `mount /boot/efi`, not `mount -a`.
 ##		- 20260327 JC: Fixed a logic error that was preventing proper mounting.
-##		- 20260813 JC: Rewritten as a standalone systemd-invoked executable.
-##			- Was sourced into the shared '/etc/rc.local' shell via '/etc/rc.localx9.d/020-insure-efi-mount'.
-##			  That wrapper is retired (kept under 'legacy/' in the repo); this now runs from
-##			  'tkz-insure-efi-mount.service', which also removes the need for the old 'sleep 5' since
-##			  systemd orders it properly instead of guessing.
-##			- No longer calls 'sudo' while already root (which was opening a PAM session per command);
-##			  instead it re-executes via sudo only when actually invoked by a non-root user.
-##			- Mountpoint is now an argument rather than hardcoded, and the mount unit name is derived
-##			  from it with 'systemd-escape', so this works for any mountpoint.
-##			- Prefers 'systemctl start <unit>.mount' over bare 'mount', and reports when the mount unit
-##			  is masked - which is the actual root cause of needing this script at boot.
-##			- Added '--check' (probe, no changes), '--dry-run' and '--wait'; real exit codes throughout.
-##			- Replaced the repeated flag-recomputation blocks with single-purpose state predicates.
+##		- 20260813 JC: Rewritten as a standalone script run by systemd.
+##			- Was sourced into '/etc/rc.local' via '/etc/rc.localx9.d/020-insure-efi-mount', now retired to
+##			  'legacy/'. Runs from 'tkz-insure-efi-mount.service', so the old 'sleep 5' is gone.
+##			- No more 'sudo' per command while already root. Re-runs itself via sudo only for a normal user.
+##			- Mountpoint is an argument, and the mount unit name comes from 'systemd-escape'.
+##			- Prefers 'systemctl start <unit>.mount' over bare 'mount', and reports a masked mount unit,
+##			  which was why this was needed at boot.
+##			- Added '--check', '--dry-run' and '--wait', with real exit codes.
+##			- Replaced the repeated flag blocks with small state functions.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

@@ -1,15 +1,11 @@
 ##	Purpose:
 ##		- Applies '/etc/tukzedo/tunables.conf' on every boot, and reports what it changed.
 ##	Notes:
-##		- Most of these settings are ALSO carried by the native drop-ins this generates
-##		  ('tkz_apply-tunables --emit-native'), which is what actually applies them at the right moment:
-##		  systemd-sysctl for the sysctls, the initrd/modprobe for module parameters, and udev for block
-##		  device schedulers - including disks hotplugged long after boot.
-##		- So this unit is a safety net and an audit trail, not the primary mechanism. It catches the
-##		  cases the native paths miss: a module parameter whose initrd has not been rebuilt yet, or any
-##		  drop-in that was never regenerated after the config changed.
-##		- Ordered after systemd-sysctl so it observes (and reports on) the native result rather than
-##		  racing it.
+##		- The native drop-ins from 'tkz_apply-tunables --emit-native' apply most of these at the right
+##		  time: systemd-sysctl, the initrd and modprobe, and udev for hotplugged disks.
+##		- This unit is the backup and the log. It catches an initrd not rebuilt yet, or drop-ins not
+##		  regenerated after a config change.
+##		- Runs after systemd-sysctl, so it reports on the result instead of racing it.
 ##	History:
 ##		- 20260813 JC: Created, replacing '/etc/rc.localx9.d/010-set-kernel-params'.
 
@@ -28,11 +24,11 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/tkz_apply-tunables
 
-## A tunable that won't take must never hold up or fail the boot; it is reported and moved past.
+## A tunable that won't take gets reported, but never fails the boot.
 SuccessExitStatus=0 1
 TimeoutStartSec=60
 
-## Writing to /proc/sys and /sys rules out the sandboxing options that would make those read-only.
+## It writes to /proc/sys and /sys, so no sandboxing that makes those read-only.
 NoNewPrivileges=yes
 ProtectHome=yes
 ProtectHostname=yes

@@ -4,9 +4,8 @@
 ##	Purpose:
 ##		- Records structured, nestable progress markers from boot-time and login-time scripts, into the
 ##		  systemd journal. Companion viewer that renders them as an indented tree: 'tkz_show-startup-log'.
-##		- Replaces the older file-based logger, which kept its own plain-text log plus an indent counter in
-##		  '/dev/shm'. The journal already provides timestamps, per-record identity, boot scoping, rotation,
-##		  and persistence, so none of that needs reimplementing - only the nesting depth does.
+##		- Replaces the older file-based logger and its '/dev/shm' indent counter. The journal already has
+##		  timestamps, rotation and boot scoping, so only the nesting depth is kept here.
 ##	Syntax:
 ##		tkz_startup-log  <caller>  <begin|end|note>  [message]
 ##		tkz_startup-log  --reset                 ## Forget any unbalanced nesting (see Notes).
@@ -14,18 +13,15 @@
 ##	Arguments:
 ##		- caller ..: Free-form identity of whatever is logging - conventionally its full path.
 ##		- action ..: One of:
-##			begin | start ..: Emits the record, THEN increases nesting depth by one.
-##			end   | stop ...: Decreases nesting depth by one, THEN emits the record (with elapsed time).
+##			begin | start ..: Emits the record, then increases nesting depth by one.
+##			end   | stop ...: Decreases nesting depth by one, then emits the record (with elapsed time).
 ##			note  | comment : Emits the record at the current depth.
 ##	Notes:
-##		- NEVER fails its caller. Every failure path is swallowed and exit code 0 is returned, because this
-##		  runs from the boot path where a logger taking down its caller would be far worse than a lost log
-##		  line. Pass '--strict' to get real exit codes when testing.
-##		- Nesting state lives in '${stateDir}' - i.e. on '/run' for root, or the caller's XDG runtime dir
-##		  otherwise. Both are tmpfs cleared at boot, so unbalanced 'begin's can never persist across boots.
-##		  '--reset' clears it within a boot.
-##		- Concurrency-safe: the nesting stack is read-modify-written under an flock, so parallel callers
-##		  (e.g. several units starting at once) can't corrupt each other's depth.
+##		- Never fails its caller. It always exits 0, since a logger breaking the boot is worse than a lost
+##		  line. Pass '--strict' for real exit codes.
+##		- Nesting state lives in '${stateDir}': '/run' for root, else the caller's XDG runtime dir. Both are
+##		  cleared at boot. '--reset' clears it mid-boot.
+##		- The nesting stack is updated under an flock, so parallel callers can't corrupt the depth.
 ##		- Emitted journal fields, queryable directly (see also 'tkz_show-startup-log'):
 ##			SYSLOG_IDENTIFIER=tkz_startup   MESSAGE=<message>       TKZ_CALLER=<caller>
 ##			TKZ_PHASE=<begin|end|note>      TKZ_DEPTH=<0-based>     TKZ_ELAPSED_MS=<only on 'end'>
@@ -91,8 +87,7 @@ function fShowSyntax(){
 
 
 function fSanitize(){
-	## Journal export syntax is line-oriented, so a newline inside a value would corrupt the record.
-	## Collapse all whitespace runs (incl. newlines and tabs) into single spaces, and trim the ends.
+	## Journal export is line-based, so a newline in a value breaks the record.
 	local text="$*"
 	text="${text//[$'\n\r\t']/ }"
 	while [[ "${text}" == *"  "* ]]; do text="${text//  / }"; done
@@ -152,7 +147,7 @@ function fNowMs(){
 function fUpdateStackAndGetDepth(){
 	## Reads, mutates and rewrites the nesting stack atomically, then echoes:  <depth> <elapsedMs>
 	## The stack holds one line per open 'begin', each line being the epoch-milliseconds it opened at.
-	## Depth is simply the stack's height, so a corrupt or missing stack degrades to depth 0 - never an error.
+	## Depth is the stack's height, so a bad or missing stack just means depth 0.
 	local -r action="$1"
 	local -i depth=0
 	local -i elapsedMs=-1
@@ -202,7 +197,7 @@ function fEmit(){
 	local -r depth="$1"
 	local -r elapsedMs="$2"
 
-	## Preferred path: a structured journal record, so the viewer never has to parse a formatted string.
+	## Structured record, so the viewer doesn't have to parse strings.
 	if command -v logger &>/dev/null; then
 		{
 			printf 'MESSAGE=%s\n'           "${argMessage:-${argAction}}"
@@ -247,11 +242,9 @@ fi
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 ## History:
 ##		- 20260813 JC: Created, replacing the file-based 'x9startup-log' in the Tukzedo boot path.
-##			- Logs to the systemd journal as structured records, rather than to a plain-text file under
-##			  '/tmp' (which had to be shuffled out to '/var/tmp' and back whenever '/tmp' was emptied).
-##			- Nesting state moved from '/dev/shm/x9/' to '/run/tkz/' (or the caller's XDG runtime dir),
-##			  and is now flock-guarded, so concurrent callers can't corrupt the depth.
-##			- Depth is now the height of a timestamp stack rather than a bare counter, which also yields
-##			  'TKZ_ELAPSED_MS' on every 'end' for free.
-##			- No world-writable files anywhere; the journal handles multi-user access properly.
+##			- Logs structured records to the journal instead of a text file under '/tmp', which had to be
+##			  moved to '/var/tmp' and back whenever '/tmp' was emptied.
+##			- Nesting state moved from '/dev/shm/x9/' to '/run/tkz/' (or the caller's XDG runtime dir), under flock.
+##			- Depth is the height of a timestamp stack, which also gives 'TKZ_ELAPSED_MS' on each 'end'.
+##			- No world-writable files.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

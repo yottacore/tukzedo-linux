@@ -80,12 +80,12 @@ A step-by-step guide to building your own Tukzedo Linux install, on a Debian 13 
 
 ## Introduction
 
-This guide builds Tukzedo Linux from scratch onto one drive, from a Debian live ISO. It was last run end to end in a libvirt VM with a real NVMe drive passed through to it.
+This guide builds Tukzedo Linux from scratch onto one drive, from a Debian live ISO.
 
 What you end up with:
 
 - A GPT drive with 2 partitions:
-	- A 4 GiB FAT32 UEFI system partition (ESP). It holds shim, systemd-boot, and one signed Unified Kernel Image (UKI) per kernel. Each UKI is about 90 MiB, so 4 GiB leaves plenty of room.
+	- A 4 GiB FAT32 UEFI system partition (ESP). It has shim, systemd-boot, and one signed Unified Kernel Image (UKI) per kernel. Each UKI is about 90 MiB, so 4 GiB leaves plenty of room.
 	- A LUKS2 partition taking up the rest of the drive.
 
 - Inside LUKS, an LVM volume group with a swap volume, and one volume for the ZFS root pool.
@@ -98,13 +98,13 @@ What you end up with:
 
 - It boots on Intel, AMD, or Nvidia graphics. GPU drivers are kept out of the UKI, so the unlock prompt uses the plain firmware framebuffer. The real driver loads after the root filesystem is up. Nvidia gets the open `nouveau` driver, which is fine for desktop use but not fast 3D.
 
-There is no Grub and no separate boot pool. The UKI already holds the kernel, initrd and command line, and its initrd has everything it needs to unlock LUKS and import ZFS. LUKS only gets unlocked once.
+There is no Grub and no separate boot pool. The UKI already has the kernel, initrd and command line, and its initrd can unlock LUKS and import ZFS on its own, so LUKS only gets unlocked once.
 
 The names used below:
 
 | Placeholder       | What it is                                                        | Example
 |:------------------|:------------------------------------------------------------------|:----------------
-| `<mUID>`          | A short unique ID for this install, used in device and pool names | `edkh3`
+| `<mUID>`          | A short unique ID for this install, used in device and pool names | `k7q2x`
 | `<hostname>`      | The new system's hostname                                         | `myhost`
 | `alice`           | A regular user with an encrypted home                             |
 | `guest`           | A regular user with a plain home                                  |
@@ -113,7 +113,7 @@ The names used below:
 
 - You need:
 	- The target drive. Everything on it gets erased.
-	- A separate Linux system to work from, with libvirt (KVM/QEMU) installed. A USB-booted Linux on the same machine works well, which is how this was last done.
+	- A separate Linux system to work from, with libvirt (KVM/QEMU) installed. A USB-booted Linux on the same machine works fine.
 	- Wired Ethernet on the target machine, if you want SSH unlock. Wi-Fi isn't available that early in boot.
 	- A spare USB stick, if you want USB key unlock. It gets erased too.
 	- A password manager, for the passphrases and keys made along the way.
@@ -209,11 +209,11 @@ Every step below reads these variables. Keep them in a file and source it in eac
 
 	~~~bash
 	cat > /root/tkz-vars.sh <<'EOF'
-	mUID=edkh3
+	mUID=k7q2x
 	diskTarget=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_TKZTARGET
 	TEMPMOUNT_BASE=/mnt/tkz
 	swapSizeGB=64
-	zfsHostID=ecd07e23
+	zfsHostID=3a9c51f2
 	newHostname=myhost
 	EOF
 	source /root/tkz-vars.sh
@@ -309,7 +309,7 @@ Every step below reads these variables. Keep them in a file and source it in eac
 	chmod 700 ${TEMPMOUNT_BASE}/root; chmod 1777 ${TEMPMOUNT_BASE}/var/tmp
 	~~~
 
-	- `imperm` holds data that's fine to lose, and isn't auto-snapshotted. `persist` holds the rest.
+	- `imperm` is for data that's fine to lose, and isn't auto-snapshotted. `persist` is for the rest.
 	- There's no `/tmp` dataset. Debian 13 mounts a fresh tmpfs on `/tmp` at every boot, which would hide it anyway.
 
 - Create a plain home for each user that doesn't need encryption:
@@ -337,7 +337,7 @@ Every step below reads these variables. Keep them in a file and source it in eac
 
 ### Install the base system
 
-- Run `debootstrap`. It may print `cannot create .../test-dev-null: Permission denied`. That's a probe that fails because the pool has `devices=off`, and it carries on without it. Look for `Base system installed successfully` at the end.
+- Run `debootstrap`. It may print `cannot create .../test-dev-null: Permission denied`. That's a probe that fails because the pool has `devices=off`, and debootstrap keeps going without it. Look for `Base system installed successfully` at the end.
 
 	~~~bash
 	debootstrap --arch=amd64 --include=locales,ca-certificates trixie ${TEMPMOUNT_BASE} http://deb.debian.org/debian
@@ -720,11 +720,11 @@ The dracut module is installed now. The USB stick itself gets made later, in [Ma
 	zfs list -o name,mounted,keystatus -r rpool_${mUID}/deb/persist/home
 	~~~
 
-	Encrypted homes show `mounted no` and `keystatus unavailable` until their user logs in. That's correct.
+	Encrypted homes show `mounted no` and `keystatus unavailable` until their user logs in.
 
 ### Mount ZFS datasets from systemd units
 
-`zfs-mount.service` mounts datasets with `zfs mount -a`, which systemd can't see into. Units that need a folder under `/var/lib` can then run before `/var/lib` is mounted, and write into the root dataset underneath it. On the first test boot, `systemd-random-seed` did exactly that. The OpenZFS mount generator fixes it. ZED keeps a list of datasets, and the generator turns each one into a real systemd mount unit, so normal mount ordering applies.
+`zfs-mount.service` mounts datasets with `zfs mount -a`, which systemd can't see into. Units that need a folder under `/var/lib` can then run before `/var/lib` is mounted, and write into the root dataset underneath it. `systemd-random-seed` is one that does. The OpenZFS mount generator fixes it. ZED keeps a list of datasets, and the generator turns each one into a real systemd mount unit, so normal mount ordering applies.
 
 - Turn the list on, and make ZED fill it by touching a property:
 
@@ -737,9 +737,9 @@ The dracut module is installed now. The USB stick itself gets made later, in [Ma
 	ls /run/systemd/generator/*.mount
 	~~~
 
-	Encrypted homes shouldn't be in that list of mount units. They carry `org.openzfs.systemd:ignore=on` for this, and get mounted at login instead.
+	Encrypted homes shouldn't be in that list of mount units. They have `org.openzfs.systemd:ignore=on` for this, and get mounted at login instead.
 
-- Check whether anything already landed under a mountpoint in the root dataset. A non-recursive bind of `/` shows the root dataset alone, with nothing mounted on top:
+- Check whether anything was already written under a mountpoint in the root dataset. A non-recursive bind of `/` shows the root dataset alone, with nothing mounted on top:
 
 	~~~bash
 	mkdir -p /run/rootpeek && mount --bind / /run/rootpeek
@@ -768,7 +768,7 @@ The login script unlocks and mounts a user's encrypted home when they log in, us
 	systemctl enable --now tkz-zfs-crypthome-logout-watchdog.timer
 	~~~
 
-- The boot-time audit keeps every mountpoint folder empty and immutable, so nothing can land in one while it's unmounted. Run it dry first, and read what it would move:
+- The boot-time audit keeps every mountpoint folder empty and immutable, so nothing gets written into one while it's unmounted. Run it dry first, and read what it would move:
 
 	~~~bash
 	tkz_zfs-mount --audit-all --dry-run
@@ -856,7 +856,7 @@ When the `systemd-boot` package is upgraded, it runs `bootctl update`. That repl
 
 ### Turn on Secure Boot
 
-Do this part on the machine the drive will live in, since the MOK enrollment is stored in that machine's firmware. It was tested in a VM with Secure Boot firmware, and needs repeating on real hardware.
+Do this part on the machine the drive will live in, since the MOK enrollment is stored in that machine's firmware. An enrollment done in the VM doesn't count for the real machine.
 
 - Make shim the first firmware boot entry. Installing systemd-boot created a "Linux Boot Manager" entry that skips shim. With Secure Boot on, firmware won't run that one. Later `bootctl update` runs may add it back, but at the end of the boot order, which is fine.
 
@@ -984,7 +984,7 @@ The stick can be ext4, FAT or exFAT. Plug it into the machine you're working on.
 
 Up to here, everything ran in the VM. If the target is the machine's own internal drive, you're booting it directly now.
 
-- In the running system, take out any SSH keys that were only for the build, then rebuild the UKI. The initrd carries its own copy of `authorized_keys`.
+- In the running system, take out any SSH keys that were only for the build, then rebuild the UKI. The initrd has its own copy of `authorized_keys`.
 
 	~~~bash
 	nano /root/.ssh/authorized_keys
@@ -1039,7 +1039,7 @@ If it won't boot, start the VM, or the machine, from the live ISO. Then follow [
 
 - Then bind and chroot as in [Enter the chroot](#enter-the-chroot). When done, leave the chroot, and unmount and export as in [First boot](#first-boot). A pool that isn't exported cleanly can still be imported next time, but only with `-f`.
 
-- A snapshot taken before a bad change can be rolled back from here. Roll back `/` and `/var/lib` together, since `/var/lib` holds the package database that has to match what's installed on `/`. `-r` also deletes any newer snapshots of that dataset.
+- A snapshot taken before a bad change can be rolled back from here. Roll back `/` and `/var/lib` together, since `/var/lib` has the package database that has to match what's installed on `/`. `-r` also deletes any newer snapshots of that dataset.
 
 	~~~bash
 	zfs list -t snapshot -o name,creation -r rpool_${mUID}/deb/ROOT rpool_${mUID}/deb/persist/var_lib
@@ -1197,7 +1197,7 @@ These scripts won't necessarily do much good without following an installation g
 
 ## Document history
 
-- 2026-10-11: Rewrote the procedure as real steps, from a fresh build in a VM: 4 GiB ESP, no Grub or bpool, shim at the fallback path, MOK key made before DKMS, generic dracut with GPU drivers left out, USB unlock as a reusable module, dracut-sshd 0.7.1 with its own host keys, ZFS mount generator, and the encrypted-home steps.
+- 2026-10-11: Rewrote the procedure as real steps. Grub and bpool are gone, and shim starts systemd-boot from a 4 GiB ESP. Added USB key unlock, SSH unlock with dracut-sshd 0.7.1, the ZFS mount generator, and `tkz_user`.
 
 - 2026-09-07: Logout watchdog: hourly cron job replaced by a systemd timer (5 minutes) plus a PAM close_session hook. Added tkz_zfs-mount (mount helper, immutable mountpoint dirs) and its boot-time audit unit.
 

@@ -1,20 +1,15 @@
 #!/bin/bash -p
 #  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
 
-##	The '-p' in the shebang is LOAD-BEARING - do not remove it:
-##		When PAM runs this from a setuid-root service (su, and anything else where euid=0 but the real
-##		uid is the invoking user), plain bash silently drops euid back to the real uid "for security",
-##		after which 'zfs load-key'/'zfs mount' fail with permission errors. '-p' (privileged mode) makes
-##		bash keep euid=0. Root-owned services (login, lightdm, sshd, cron) are unaffected either way.
+##	Keep the '-p' in the shebang:
+##		Under setuid-root PAM services like su, euid is 0 but the real uid is the user. Plain bash drops
+##		euid to the real uid, and then 'zfs load-key' and 'zfs mount' fail. '-p' keeps euid 0.
 
 ##	Purpose:
-##		- Mounts a user's encrypted ZFS home dataset - and ALL of its child datasets - via PAM at login.
-##		- If ANY dataset in the user's tree fails to mount, exits non-zero, so that PAM (when configured with
-##		  'requisite' as below) refuses the login rather than dropping the user into a broken/empty home.
-##		- The mounting itself is done by tkz_zfs-mount, which moves anything already sitting inside a
-##		  not-yet-mounted mountpoint aside (never deleted) into a '.tkz_premount-quarantine' folder next to
-##		  it, leaves every mountpoint dir empty and immutable, mounts, and verifies. Without that helper this
-##		  script falls back to plain 'zfs mount', so a missing helper never blocks logins.
+##		- Mounts a user's encrypted ZFS home dataset, and all its child datasets, via PAM at login.
+##		- If any dataset fails to mount, exits non-zero, so PAM ('requisite', below) refuses the login
+##		  instead of giving the user an empty home.
+##		- tkz_zfs-mount does the mounting. If it's missing, this falls back to plain 'zfs mount'.
 ##	Requirements - ZFS properties on the user's top-level home dataset:
 ##		canmount=noauto
 ##		x9.custom.automount:user=<username>  ## The username that PAM will pass in $PAM_USER.
@@ -23,18 +18,15 @@
 ##			## ZFS encrypted home
 ##			auth    requisite                       pam_exec.so expose_authtok quiet  /usr/local/sbin/tkz_zfs-crypthome_login
 ##		- Notes on the above:
-##			- 'requisite' (vs the old 'optional') is what enforces "no login unless ALL datasets mounted".
-##			- This only runs AFTER pam_unix has accepted the password, and it runs for every service that
-##			  includes common-auth (console login, display manager, screen unlock, sudo). The fast paths
-##			  (no matching dataset, or everything already mounted) exit 0 immediately, which is what keeps
-##			  root/console logins and sudo safe and quick.
-##			- LOCKOUT WARNING: with 'requisite', if this script file is missing or non-executable, pam_exec
-##			  fails and ALL password logins fail (root console included; login uses PAM, only sulogin/rescue
-##			  does not). Recovery: rescue boot, or a still-open root/sudo session, then either restore this
-##			  script or revert '/etc/pam.d/common-auth' from its backup.
-##	Manual testing (safe - read-only unless something actually needs mounting):
+##			- 'requisite', not 'optional', is what refuses the login when a dataset didn't mount.
+##			- Runs after pam_unix accepts the password, for every service that includes common-auth
+##			  (console, display manager, screen unlock, sudo). Users with nothing to mount exit 0 right away.
+##			- Lockout warning: with 'requisite', if this file is missing or not executable, every password
+##			  login fails, root console included. Fix it from a rescue boot or a still-open root session, by
+##			  restoring this script or reverting '/etc/pam.d/common-auth' from its backup.
+##	Manual testing (read-only unless something needs mounting):
 ##		sudo PAM_USER=<username> tkz_zfs-crypthome_login </dev/null
-##	  Or interactively (prompts for the password only if the ZFS key actually needs loading):
+##	  Or interactively (prompts for the password only if the key needs loading):
 ##		sudo tkz_zfs-crypthome_login <username>
 ##	Troubleshooting:
 ##		- PAM invokes this with 'quiet', so stdout is discarded; everything important also goes to syslog:
@@ -57,7 +49,7 @@ declare -r custProp_UserName="x9.custom.automount:user"
 declare -r custProp_Mountpoint="x9.custom.automount:dir"  ## Only consulted when 'mountpoint' is 'legacy'.
 
 ## If this file exists, its contents are appended to the password before 'zfs load-key'.
-## (Only meaningful if this file itself lives on an encrypted filesystem that is locked when offline.)
+## Only useful if the file is on an encrypted filesystem.
 declare -r pwdLongSaltFile="/etc/cryptkeys/zfs_pam_longsalt_${HOSTNAME}.txt"
 
 ## Does the actual mounting: quarantine, immutable mountpoint dirs, mount, verify. See its header.
@@ -65,14 +57,13 @@ declare -r mountHelper="/usr/local/sbin/tkz_zfs-mount"
 
 
 function fLog(){
-	## Info-level message, to stdout and syslog. (PAM discards stdout due to 'quiet'; syslog is the reliable channel.)
+	## PAM's 'quiet' throws away stdout, so syslog too.
 	echo -e "$*"
 	command -v logger &>/dev/null  &&  logger -t "${meName}" -- "$*" || true
 }
 
 function fLogError(){
-	## Error-level message, to stderr and syslog.
-	echo -e "❌ $*" >&2
+	echo -e "ERROR: $*" >&2
 	command -v logger &>/dev/null  &&  logger -p auth.err -t "${meName}" -- "ERROR: $*" || true
 }
 
@@ -104,8 +95,8 @@ function fMain(){
 	export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	cd /
 
-	## Read the password from stdin NOW if it is being piped to us (PAM's 'expose_authtok' does this).
-	## If stdin is a terminal (manual run), defer prompting until/unless the key actually needs loading.
+	## Read the password from stdin now if it's piped in (PAM's 'expose_authtok').
+	## On a terminal, only prompt if the key needs loading.
 	local userPwd=""
 	local -i pwdIsFromStdin=0
 	if [[ ! -t 0 ]]; then
@@ -122,7 +113,7 @@ function fMain(){
 
 	fLog "[ ${meName} started $(date "+%Y%m%d-%H%M%S") for user '${targetUser}'. ]"
 
-	## Fail loudly (blocking login, if 'requisite') if a hard dependency is missing.
+	## A missing dependency blocks the login.
 	local dep=""
 	for dep in awk find zfs; do
 		if ! command -v "${dep}" &>/dev/null; then
@@ -135,7 +126,7 @@ function fMain(){
 	local -a candidateDatasets=()
 	readarray -t candidateDatasets < <(zfs get -H -t filesystem -s local -o name,value "${custProp_UserName}" 2>/dev/null | awk -F'\t' -v u="${targetUser}" '$2==u {print $1}' || true)
 
-	## Of those, keep only ones with canmount=noauto, and pick the top-most (shortest name) as THE home dataset.
+	## Of those, keep only ones with canmount=noauto, and pick the top-most (shortest name) as the home dataset.
 	local rootDataset=""
 	local nextDataset=""
 	for nextDataset in "${candidateDatasets[@]}"; do
@@ -145,23 +136,21 @@ function fMain(){
 		fi
 	done
 
-	## No matching dataset is NOT an error: most users (e.g. root) simply don't have an encrypted ZFS home.
-	## Exiting 0 here is what keeps 'requisite' safe for them.
+	## Most users, like root, have no encrypted home. Exiting 0 keeps 'requisite' safe for them.
 	if [[ -z "${rootDataset}" ]]; then
 		fLog "FYI: User '${targetUser}' has no ZFS filesystem with both '${custProp_UserName}=${targetUser}' [local] and 'canmount=noauto'; nothing for ${meName} to do."
 		return 0
 	fi
-	fLog "✔️ Determined that '${targetUser}'s ZFS home dataset is '${rootDataset}'."
+	fLog "OK '${targetUser}'s ZFS home dataset is '${rootDataset}'."
 
-	## Resolve and validate its mountpoint.
 	local -r rootMountLocation="$(fGetMountpointFor "${rootDataset}")"
 	if [[ -z "${rootMountLocation}" ]]; then
 		fLogError "In ${meName}.${FUNCNAME[0]}(): Unable to determine mount location of '${rootDataset}' from ZFS properties 'mountpoint' or '${custProp_Mountpoint}'."
 		return 1
 	fi
-	fLog "✔️ Mount location: '${rootMountLocation}'."
+	fLog "OK Mount location: '${rootMountLocation}'."
 
-	## Load the encryption key if needed. (Idempotent: skipped when already loaded, e.g. screen unlock, sudo.)
+	## Already loaded for screen unlock and sudo.
 	local -r encryptionRoot="$(fGetZfsProp "${rootDataset}" encryptionroot)"
 	if [[ -n "${encryptionRoot}" && "${encryptionRoot}" != "-" ]]; then
 		if [[ "$(fGetZfsProp "${encryptionRoot}" keystatus)" == "unavailable" ]]; then
@@ -188,16 +177,14 @@ function fMain(){
 				fLogError "In ${meName}.${FUNCNAME[0]}(): 'zfs load-key ${encryptionRoot}' did not result in keystatus=available. (Wrong password, or salt file mismatch?)"
 				return 1
 			fi
-			fLog "✔️ Key loaded for '${encryptionRoot}'."
+			fLog "OK Key loaded for '${encryptionRoot}'."
 		else
-			fLog "✔️ Key for '${encryptionRoot}' is already loaded."
+			fLog "OK Key for '${encryptionRoot}' is already loaded."
 		fi
 	fi
 	userPwd=""
 
-	## Mount the whole tree through tkz_zfs-mount: parents first, stray mountpoint contents quarantined
-	## (never deleted), each mountpoint dir left empty and immutable, each dataset verified. If the helper
-	## is missing, fall back to plain 'zfs mount' so a lost helper cannot lock everyone out.
+	## Fall back to plain 'zfs mount' so a missing helper can't lock everyone out.
 	if [[ -x "${mountHelper}" ]]; then
 		"${mountHelper}" "${rootDataset}"  ||  fLogError "'${mountHelper}' reported failure for '${rootDataset}'."
 	else
@@ -210,7 +197,7 @@ function fMain(){
 		done
 	fi
 
-	## Verify every dataset in the tree (canmount != off) is now mounted, whichever path did the work.
+	## Every dataset with canmount != off has to be mounted now.
 	local -a failedDatasets=()
 	local -i mountedCount=0
 	local nextCanmount=""
@@ -223,19 +210,18 @@ function fMain(){
 		fi
 	done < <(zfs list -r -H -t filesystem -o name,canmount "${rootDataset}")
 
-	## THE gate: every dataset in the user's tree must have mounted, or the login is refused.
 	if [[ "${#failedDatasets[@]}" -gt 0 ]]; then
 		fLogError "In ${meName}.${FUNCNAME[0]}(): ${#failedDatasets[@]} of '${targetUser}'s dataset(s) failed to mount: ${failedDatasets[*]}. Refusing login."
 		return 1
 	fi
 
-	## Belt-and-braces: the home mountpoint must have actual contents now.
+	## An empty home means something still went wrong.
 	if [[ -z "$(find "${rootMountLocation}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
 		fLogError "In ${meName}.${FUNCNAME[0]}(): All datasets report mounted, but '${rootMountLocation}' is empty. Refusing login."
 		return 1
 	fi
 
-	fLog "✔️ All ${mountedCount} of '${targetUser}'s dataset(s) are mounted; '${rootMountLocation}' has contents. Mission accomplished."
+	fLog "OK All ${mountedCount} of '${targetUser}'s dataset(s) are mounted."
 
 	## Call logging if it exists. Add any logging system you want here, or just remove this part if you don't want it.
 	local -r logExec="/usr/local/bin/x9/sh/x9startup-log"
@@ -273,20 +259,16 @@ fMain "$@"
 ##			- Copied original to v2, to add salt feature, and refactor in the future.
 ##			- Append contents of /etc/cryptkeys/zfs_pam_longsalt_${HOSTNAME}.txt to password, if file exists.
 ##			- Proceed even if there are folders in underlying mount location; just not if no files.
-##		- 20260907 JC: Mount loop and quarantine moved out into tkz_zfs-mount, which also makes every
-##		  mountpoint dir immutable. This script now just calls it and verifies the tree; plain 'zfs mount'
-##		  fallback if the helper is missing.
+##		- 20260907 JC: Mount loop and quarantine moved into tkz_zfs-mount, which also makes mountpoint dirs
+##		  immutable. This calls it and checks the tree, with plain 'zfs mount' if the helper is missing.
 ##		- 20260812: Full rewrite.
-##			- Replaced the one big piped dataset-discovery command (and its 'datamash' dependency) with a
-##			  simple readable loop over `zfs get -s local`.
-##			- Pre-existing files/folders in a mountpoint no longer abort the mount: they are moved (never
-##			  deleted) into a '.tkz_premount-quarantine' folder next to the mountpoint.
-##			- Every dataset in the user's tree (canmount != off) is now mounted and verified individually;
-##			  if ANY fails, the script exits non-zero so PAM ('requisite') refuses the login.
-##			- Key loading is now explicit and verified via 'keystatus', against the 'encryptionroot'.
-##			- All important output also goes to syslog (PAM's 'quiet' discards stdout).
-##			- Manual test mode: 'sudo tkz_zfs-crypthome_login <username>' (prompts for password only if needed).
-##			- 'set -euo pipefail' throughout.
-##			- Shebang is now '#!/bin/bash -p': under setuid PAM services (su et al), plain bash silently
-##			  dropped euid root, making 'zfs load-key'/'zfs mount' fail. Found via end-to-end PAM testing;
-##			  the old version had the same latent bug but 'optional' hid it.
+##			- Replaced the big piped dataset lookup (and 'datamash') with a loop over `zfs get -s local`.
+##			- Files already in a mountpoint get moved to a '.tkz_premount-quarantine' folder instead of
+##			  stopping the mount.
+##			- Each dataset in the tree is mounted and checked. If any fails, exit non-zero so PAM refuses the login.
+##			- Key loading is checked with 'keystatus' on the 'encryptionroot'.
+##			- Output also goes to syslog, since PAM's 'quiet' throws stdout away.
+##			- Manual test mode: 'sudo tkz_zfs-crypthome_login <username>'.
+##			- 'set -euo pipefail'.
+##			- Shebang is '#!/bin/bash -p'. Under su, plain bash dropped euid root and the zfs commands failed.
+##			  The old version had the same bug, but 'optional' hid it.

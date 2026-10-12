@@ -249,7 +249,7 @@ All of which the Tukzedo Linux approach sidesteps:
 
 	- For example, you may shut down a laptop, thinking the encryption is securely at-rest. However, this can be trivially foiled by... turning on the laptop. At that point, the full disk contents are available - either via weak user account passwords, zero-day exploits, or just the user settings not being configured to lock the screen on hibernation restore. (Or the desktop manager failing to do so as-configured.)
 
-	- If a laptop was hibernated and not fully shut down (which you can never be sure of with macOS or Windows even if you chose "Shut Down"), then a deliberate attcker has all kinds of stuff to discover that will be loaded back into active memory, which may not be transparently encrypted.
+	- If a laptop was hibernated and not fully shut down (which you can never be sure of with macOS or Windows even if you chose "Shut Down"), then a deliberate attacker has all kinds of stuff to discover that will be loaded back into active memory, which may not be transparently encrypted.
 
 	- TPM is a poor choice for desktop computer enthusiasts who frequently upgrade and tweak hardware. It's slightly annoying if your hardware changes enough to prohibit booting with Secure Boot enabled. But that can be easily disabled in UEFI setup. But with TPM refusing to unseal the drive decryption keys at all (a necessary security feature), even with Secure Boot disabled, now the annoyance is greatly compounded.
 
@@ -445,7 +445,7 @@ __Status__: Proof-of-concept started.
 
 __Phase III features__:
 
-- Provide a modern filesytem structure that moves forward from the Linux _Filesystem Hierarchy Standard_ (FHS), but in virtual form without breaking anything.
+- Provide a modern filesystem structure that moves forward from the Linux _Filesystem Hierarchy Standard_ (FHS), but in virtual form without breaking anything.
 
 - The legacy Linux FHS will still have to exist for compatibility purposes, but is hidden from regular users, and a more modern hierarchy shown in its place.
 

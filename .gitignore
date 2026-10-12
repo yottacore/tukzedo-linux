@@ -1,7 +1,6 @@
 # Prerequisites
 *.d
-# ... but '*.d' (C dependency files) also matches DIRECTORIES like etc/cron.d, conf.d, etc.,
-# which this repo mirrors under filesystem/. Un-ignore directories (trailing slash = dirs only):
+# Keep dirs like etc/cron.d under filesystem/
 !*.d/
 
 # Object files

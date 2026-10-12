@@ -2,9 +2,8 @@
 #  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
 
 ##	Purpose:
-##		- Renders the structured startup records written by 'tkz_startup-log' as an indented tree, with
-##		  per-step timings - i.e. the human-readable view that the old plain-text startup log used to be,
-##		  except reconstructed on demand from the journal instead of maintained as a file on disk.
+##		- Shows the records written by 'tkz_startup-log' as an indented tree with timings, read from the
+##		  journal on demand.
 ##	Syntax:
 ##		tkz_show-startup-log  [options]
 ##	Options:
@@ -22,13 +21,10 @@
 ##		    --raw ..........: Dump the underlying journal records instead of rendering them.
 ##		-h, --help .........: This.
 ##	Notes:
-##		- Reads 'journalctl -o export', whose format is plain 'KEY=value' lines with blank-line record
-##		  separators. That deliberately avoids a JSON parser (and therefore any dependency on 'jq' or
-##		  python being installed on a machine that may still be mid-bring-up).
-##		- Indentation comes from the 'TKZ_DEPTH' field recorded at write time, so a filtered view keeps
-##		  each surviving record at its true depth rather than re-deriving a misleading one.
+##		- Reads 'journalctl -o export' (plain 'KEY=value' lines), so it needs no jq or python.
+##		- Indents come from the recorded 'TKZ_DEPTH', so a filtered view keeps each record's real depth.
 ##		- The two timing columns are: elapsed since the first shown record, and delta since the previous
-##		  shown record. Blocks closed with a matching 'end' additionally show their own duration.
+##		  shown record. Blocks closed with a matching 'end' also show their own duration.
 ##		- Everything here is read-only. For the raw data, or to query it yourself:
 ##			journalctl -b -t tkz_startup -o json-pretty
 ##	Copyright and license ...: Toward bottom of this file.
@@ -61,7 +57,7 @@ declare -i useColor=1
 
 
 function fShowSyntax(){
-	## Reproduce the option block from this file's own header, so the two can never drift apart.
+	## Options come from this file's header, so they can't drift apart.
 	echo
 	echo "${meName} version ${meVersion}"
 	echo
@@ -124,8 +120,7 @@ function fBuildJournalArgs(){
 
 
 function fRender(){
-	## Parses 'journalctl -o export' - blank-line-separated blocks of 'KEY=value' lines - and prints the
-	## indented tree. Kept in awk (not bash) so that following a live boot stays cheap.
+	## awk, not bash, so following a live boot stays cheap.
 	awk -v useColor="${useColor}"           \
 	    -v callerRegex="${optCallerRegex}"  \
 	    -v maxDepth="${optMaxDepth}"        \
