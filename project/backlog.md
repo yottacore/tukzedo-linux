@@ -37,11 +37,379 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 
 ### Bugs
 
-- The logout watchdog locks a home whose key an admin loaded on purpose, within seconds. Any SSH session closing starts it, root's included, as does its 5-minute timer.
+- ◐ b28l stops in the initrd when it boots with no network. After the USB key unlocks LUKS, it fails at about 2 minutes with `rpool_edkh3: no such pool available`, then the emergency shell.
+	- Type: Bug
+	- Severity: Critical
+	- Opened: 20261012-083536
+	- Status: Waiting for testing
+	- Origin: `rd.neednet=1` in the build guide's command line, there since 42ded6a. Seen on the laptop's first boot.
+	- Cause: with `rd.neednet=1`, dracut holds its initqueue until the network is up, for up to 2 minutes. The LVM volumes only activate from the initqueue. The stock ZFS import isn't ordered after them, so it ran right after unlock, found no pool, and the mount failed once the wait ran out. With a cable in, it was a race won by about a second.
+	- Confirmed: with the link down, the new import step logged the root LV as not active yet at 9s, and imported the pool. dracut's own LVM scan started at 122s.
+	- Fixed:
+		- `tkz-zfs-import-root.service` runs before the stock import. It activates the `rd.lvm.lv` volumes, then imports the root pool.
+		- `rd.neednet=1` is gone from the guide's command line. So are the 2 `rd.net.timeout` options, which belong to dracut's older network module and did nothing here. The network still comes up for SSH unlock, and the boot doesn't wait for it. `tkz_rebuild-uki` warns if `rd.neednet=1` comes back.
+	- Test case: `tests/tkz_zfs-import.bash`, cases `unit_root_before_stock_scan` and `lv_inactive`. The first fails on `zfs-import` and passes here. The rest is a boot test with the network on and off.
+	- Verified on b28l's drive, booting its own signed UKI with USB unlock:
+		- Link up: login prompt, 16.3s from kernel start. The initrd's SSH server answered from DHCP on, at about 2s.
+		- Link down: the initrd is done in 11.5s. The login prompt comes at 2min 14s, held by the next bug.
+		- Link down with only the import fix, still with `rd.neednet=1`: boots, with the initrd done at 2min 2s.
+	- Needs external testing: boot the laptop with the cable out, then with it in. Both should reach the login prompt, with no emergency shell. `journalctl -b -u tkz-zfs-import-root.service` should say the LV wasn't active yet, or was already active.
+	- Branch: zfs-import-fixes
+	- Commit: 83b2410
+
+- With no network, b28l's login prompt waits about 2 minutes after the initrd is done. `open-iscsi.service` waits for `network-online.target` before it checks whether there are any iSCSI targets, and `remote-fs-pre.target`, then `systemd-user-sessions` and every getty, wait for it.
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-115028
+	- Origin: `dracut-network`, which the build guide installs, recommends `open-iscsi` and `nfs-common`, so apt installs them. Nothing here uses iSCSI.
+	- Measured: in a boot with the link down, `systemd-networkd-wait-online` timed out 2 minutes after the switch to the real system, and `remote-fs-pre.target` and the getty followed within a second. With the link up, the whole boot takes 16s.
+	- Probable fix: mask `open-iscsi.service`, `iscsid.service` and `iscsid.socket` in the build guide, or leave the package out. Check `networking.service` from ifupdown too, which is enabled alongside networkd.
+
+- `tkz_rebuild-uki --all` leaves the UKIs it already rebuilt unsigned when a later kernel fails to build. With Secure Boot on, the default entry and its fallback won't boot.
+	- ID: Code Review 20261012 item 1
+	- Type: Bug
+	- Severity: Critical
+	- Opened: 20261012-090724
+	- Origin: 118da99. No earlier review. Confirmed with stubbed `dracut` and `sbsign`: of 3 kernels, the newest failed for lack of `zfs.ko`, and the other 2 were left unsigned on the ESP.
+	- Cause: dracut overwrites each UKI on the ESP in place, and signing waits until every build is done. `set -e` stops at the first failed build. That failure is the newest-kernel-without-ZFS case the n-1 default exists for, and `--all` is the documented deploy step.
+	- Probable fix: build each UKI off the ESP, sign and `sbverify` it, then `mv` it into place, one kernel at a time.
+
+- ✔️ `tkz_user migrate` moved the contents of any directory into the user's home, and gave the user ownership, if `~/cache`, `~/tmp` or `~/var` was a symlink to it.
+	- ID: Code Review 20261012 item 2
+	- Type: Bug
+	- Severity: Critical
+	- Opened: 20261012-090724
+	- Status: Done
+	- Origin: a6cf5dc. No earlier review. Confirmed: the migrate loop run with `zfs` stubbed moved a symlinked target's files into the new home.
+	- Cause: `rsync -a` keeps the link, `[[ -d ]]` and the `mv .../*` glob follow it, and `fFixOwnership` then runs `chown -R`. A link to `/etc/mok` or `/root/.ssh` empties it.
+	- Probable fix: skip any child that is a symlink.
+	- Fixed: a `.cache`, `tmp` or `var` that is a symlink or a file is left as it is, with no dataset of its own. A folder moved aside gets a name with the run's timestamp, so a planted `var.migrating` link isn't followed either. The `chmod 700` in `fFixOwnership` skips symlinks. A `/home/<user>` that is itself a symlink is refused.
+	- Swept: every `mv`, `chmod`, `chown`, `cp` and `rsync` in `tkz_user`, the login helper and the watchdog. `rsync -a` and `chown -R` don't follow links, and `cp -rn /etc/skel/.` refuses to write through one. The `tkz_zfs-mount` quarantine is item 5.
+	- Test case: `tests/tkz_user_migrate.bash`, case `symlinked_children`.
+	- Verified: fails on main, where the files behind the `.cache`, `tmp` and `var.migrating` links were moved, and passes on the branch.
+	- Branch: migrate-safety
+	- Commit: f28d600
+	- Closed: 20261012-105755
+	- Acceptance signoff: Self-closed: reproduced, and the test fails before and passes after.
+
+- ◐ A `tkz_user migrate` that fails partway locks the user out. Every later login is refused until the leftover dataset is cleaned up by hand.
+	- ID: Code Review 20261012 item 3
+	- Type: Bug
+	- Severity: Critical
+	- Opened: 20261012-090724
+	- Status: Waiting for testing
+	- Origin: a6cf5dc. No earlier review. Confirmed: the login helper, run against a stubbed `zfs` in that state, refused the login.
+	- Cause: the temp dataset gets the automount user property when it is created, keyed to the new password. The login password changes only at the end. An rsync error, a busy unmount or `~/tmp` being a file stops it in between.
+	- Probable fix: set the property after the final rename, and add an EXIT trap that rolls back.
+	- Fixed: the automount property goes on last, after the password changes. Until then login and the watchdog both ignore the new dataset. Before, the watchdog could also lock the temp dataset in the middle of the copy.
+		- An EXIT trap undoes each finished step in reverse: the password hash, the new dataset's place, then the old home with its mountpoint and canmount. It destroys the copy only once the old home is back, and only if its guid still matches. Ctrl-C rolls back too.
+		- A `~/tmp` that's a file no longer stops it, per item 2.
+	- Test case: `tests/tkz_user_migrate.bash`, cases `fail_rsync`, `fail_child_create`, `fail_chpasswd`, `fail_set_property`, `interrupted_during_copy`, `killed_during_copy` and `tmp_is_a_file`.
+	- Verified: all 7 fail on main and pass on the branch, with a fake zfs. Each runs the real login helper, which takes the old password after a failed migrate.
+	- Needs external testing: real ZFS on a test host with a throwaway user. Run `tkz_user migrate` to the end once. Then run it again on another user, and stop it partway: Ctrl-C during the copy, and a root shell sitting in the old home, which makes its unmount fail. After each failed run, the old home should be back and mounted, `zfs list` should show no `_migrating-` dataset, and the user should log in with the old password.
+	- Branch: migrate-safety
+	- Commit: f28d600
+
+- ✔️ Any user can stop the logout watchdog, and can block encrypted-home logins, by creating a lock file first.
+	- ID: Code Review 20261012 item 4
+	- Type: Bug
+	- Severity: Critical
+	- Opened: 20261012-090724
+	- Status: Done
+	- Origin: 11a730b (watchdog), 1a19cbe (`tkz_zfs-mount`), a6cf5dc (`tkz_user`). No earlier review. Confirmed downstream: with a lock file root couldn't open, `tkz_zfs-mount` failed and the login helper refused the login.
+	- Cause: the locks sit in `/dev/shm` and `/run/lock`, which are world-writable and sticky. With `fs.protected_regular=2`, root can't open a file another user created there. The PAM line is `requisite`, and the fallback only covers a missing helper, not a failing one.
+	- Sweep: `tkz_zfs-crypthome_logout-watchdog`, `tkz_zfs-mount`, `tkz_user`.
+	- Probable fix: a root-only dir such as `/run/tkz/`, or `flock` on the script file itself.
+	- Fixed: the watchdog and `tkz_zfs-mount` keep their locks in `/run/tkz`. Each creates it mode 0700, and refuses to run if it's a symlink or isn't owned by root. Only root can create anything in `/run`, so nobody else can plant or hold a lock there. The watchdog's log buffer moved there too.
+		- An older `tkz_startup-log` made `/run/tkz` mode 0755, so the scripts tighten it. `tkz_startup-log` now makes it 0700.
+		- A lock on the script file itself was ruled out. Any user can read the file, so any user can flock it.
+		- The login helper no longer calls the old `x9startup-log`. Where that's still installed, it wrote to `/dev/shm` as root at every login.
+	- Swept: every `flock`, `mktemp`, `/dev/shm`, `/run/lock`, `/tmp` and `/var/tmp` in `filesystem/`, `utility/`, `tests/` and the guides. The `tkz_zfs-mount` bind scratch dir and the `tkz_user migrate` temp mount are directly in `/run`, which only root can write. `tkz_startup-log` uses `/run/tkz` for root, and the caller's own runtime dir otherwise. On main `tkz_user` took no lock. Its new `hold` takes the watchdog's lock, in `/run/tkz`.
+		- Not on main: `tkz_user passwd` on the `keyring-passwd` branch takes the watchdog's lock at the old `/dev/shm` path. Split off as the next item.
+	- Test case: `tests/tkz_locks.bash`, cases `watchdog_lock_root_only`, `watchdog_planted_flock`, `watchdog_planted_dir`, `mount_lock_root_only`, `mount_planted_dir`, `run_dir_tightened`, `run_dir_symlink`, `run_dir_not_root` and `parity_run_dir`. The `*_root_only` cases check every lock held during a run, so a new lock in a shared folder fails them too. They also fail on any file left in `/dev/shm` or `/run/lock`.
+	- Verified: all 9 fail on main and pass on the branch. A held flock or a folder at the old watchdog lock path kept the watchdog from locking a home, and a folder at the old mount lock path refused the login. The watchdog regression tests in private notes and `tests/tkz_user_migrate.bash` still pass.
+	- Branch: run-tkz-locks
+	- Commit: 5ed36ad
+	- Closed: 20261012-111600
+	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
+
+- On the `keyring-passwd` branch, `tkz_user passwd` takes the logout watchdog's lock at the old `/dev/shm` path. With item 4's fix in, it no longer keeps the watchdog off a home it has open, and any user can make it wait 5 minutes and fail.
+	- Type: Bug
+	- Severity: High
+	- Opened: 20261012-111600
+	- Origin: 4ea029d. Split from Code Review 20261012 item 4.
+	- Probable fix: call `fTakeWatchdogLock`, which `tkz_user` has on main. Merging main into `keyring-passwd` conflicts on the `watchdogLock` line, which is the spot to change.
+	- Note: per the 20261012 rule, the fix goes on a branch off `keyring-passwd`.
+
+- `tkz_zfs-mount` quarantine follows a symlink named `.tkz_premount-quarantine`. Root then makes the target mode 700 and moves files into it.
+	- ID: Code Review 20261012 item 5
+	- Type: Bug
+	- Severity: High
+	- Opened: 20261012-090724
+	- Origin: 1a19cbe. No earlier review. The mechanism is confirmed in a simulation. A user can plant the link wherever a raw mountpoint dir sits under a dir they can write, such as a home whose child datasets were partly unmounted.
+	- Probable fix: refuse a base that is a symlink or not owned by root, and create it with `mkdir -m 700` without `-p`.
+
+- ✔️ On branch `zfs-import`, `tkz-zfs-import.service` could be skipped silently at boot, because it ran its script from `/usr/local`, which may not be mounted yet.
+	- ID: Code Review 20261012 item 6
+	- Type: Bug
+	- Severity: High
+	- Opened: 20261012-090724
+	- Status: Done
+	- Origin: e932ac2, unmerged. No earlier review. Confirmed: on b28l, the `usr-local.mount` the ZFS mount generator makes is ordered only after `-.mount`, and nothing orders the unit after it.
+	- Cause: `/usr/local` is its own dataset, and the unit has `DefaultDependencies=no` with nothing ordering it after `usr-local.mount`. When the mount loses the race, `ConditionFileIsExecutable` skips the unit with no error, so the cache file stays and declared pools aren't imported. ExecStop can lose the same race at shutdown.
+	- Probable fix: install the script under `/usr/sbin` as the initrd does, and run it from there.
+	- Fixed: the script is `/usr/sbin/tkz_zfs-import` now, the same path as in the initrd, in the mirror, both units, the dracut module, the guide and the `tkz_rebuild-uki` check.
+	- Swept: the other tkz units run from `/usr/local/sbin`, but each is `After=local-fs.target`.
+	- Test case: `tests/tkz_zfs-import.bash`, case `unit_no_usr_local`. It fails on `zfs-import` and passes here.
+	- Verified: on b28l the unit ran at each test boot from `/usr/sbin`.
+	- Branch: zfs-import-fixes
+	- Commit: 83b2410
+	- Closed: 20261012-115028
+	- Acceptance signoff: Self-closed: the test fails before and passes after.
+
+- ◐ On branch `zfs-import`, `zfs_force=1` force-imports every pool the initrd can see. The docs and `zfs-pools.conf` say pools outside the list are never forced.
+	- ID: Code Review 20261012 item 7
+	- Type: Bug
+	- Severity: High
+	- Opened: 20261012-090724
+	- Status: Waiting for testing
+	- Origin: e932ac2, unmerged. No earlier review. Confirmed in Debian's 90zfs source (2.3.9): `zfs_force=1` adds `-f` to the initrd's `zpool import -aN` scan.
+	- An external pool, or a disk passed through from another running host, gets force-imported at boot. That can corrupt it.
+	- Against: the recorded "keep every import layer" decision lists `zfs_force=1` as a layer. Dropping it reverses that. Correcting the docs does not.
+	- Note: the error text "rpool_edkh3: no such pool available" points more toward the scan racing LVM than toward a stale hostid. The retry with `lvchange -ay` covers that case without `-f`. Check `journalctl -b` on b28l before deciding.
+	- Decisions: 20261012. Force-import only pools whose devices are inside the LUKS container. Pools outside it are never forced, whether or not they are in `zfs-pools.conf`. This replaces the blanket `zfs_force=1` layer.
+	- Note: measured since. The laptop stall was the scan racing LVM, not a stale hostid. See the first bug.
+	- Fixed: per the Decisions row. `zfs_force=1` is gone from the guide, and `tkz_rebuild-uki` warns if it's on the command line. `tkz_zfs-import` forces a pool only when every device of it is inside a LUKS container named by `rd.luks.name` or `rd.luks.uuid`. It lists the pool with a `-d` for each device inside the container, needs it to show `ONLINE` there, and then imports with the same `-d` list. Any other pool is never forced, and the log says why. Only zpool's "in use from another system" refusal leads to `-f`.
+		- The note about keeping every import layer is updated to match.
+	- Test case: `tests/tkz_zfs-import.bash`, cases `stale_hostid_inside_luks`, `stale_hostid_luks_uuid_form`, `stale_hostid_outside_luks`, `stale_hostid_partly_outside` and `stale_hostid_no_luks`. The last 3 fail on `zfs-import`, which forced those pools. Taking out the device check fails `stale_hostid_outside_luks`, and taking out the `ONLINE` check fails `stale_hostid_partly_outside`.
+	- Verified: on b28l, the script finds the LUKS container and both LVs on it, and `zpool import -d` accepts device paths.
+	- Needs external testing: a boot after the root pool was last imported under another hostid and not exported. The journal should show "Imported 'rpool_<mUID>' with -f".
+	- Branch: zfs-import-fixes
+	- Commit: 83b2410
+
+- ✔️ On branch `zfs-import`, a hung `zpool`, `lvm` or `udevadm` call in the initrd hung the boot forever, with no emergency shell.
+	- ID: Code Review 20261012 item 8
+	- Type: Bug
+	- Severity: High
+	- Opened: 20261012-090724
+	- Status: Done
+	- Origin: e932ac2, unmerged. No earlier review. Confirmed with a stub `zpool import` that sleeps: the script ran past its own deadline, which is only checked between attempts.
+	- Cause: `tkz-zfs-import-root.service` has `TimeoutStartSec=infinity`, and its comment says the script stops itself.
+	- Probable fix: `TimeoutStartSec=5min`.
+	- Fixed: `TimeoutStartSec=5min`, which leaves room past the script's 60s default for one slow try. The guide says `rd.tkz.zfs_import_timeout=` goes up to about 4 minutes.
+	- Test case: `tests/tkz_zfs-import.bash`, case `unit_root_timeout`. It fails on `zfs-import`, where the timeout is infinite, and passes here.
+	- Branch: zfs-import-fixes
+	- Commit: 83b2410
+	- Closed: 20261012-115028
+	- Acceptance signoff: Self-closed: the test fails before and passes after.
+
+- The build guide's recovery steps fail. The copy of `tkz-vars.sh` it says to save has no UUIDs, and the ESP gets mounted twice, so `zpool export` fails at the end.
+	- ID: Code Review 20261012 item 9
+	- Type: Bug
+	- Severity: High
+	- Opened: 20261012-090724
+	- Origin: a6cf5dc. No earlier review. Confirmed from the guide's step order.
+	- The guide says to copy the file off before partitioning, and the UUIDs are appended after. "Get back in" then opens LUKS and mounts by empty UUIDs.
+	- "Get back in" mounts the ESP, then "Enter the chroot" mounts it again. Teardown unmounts it once, so the root stays busy, and the next import needs `-f`.
+
+- The build guide's large-key-file advice uses the wrong `cryptsetup` flag. Followed as written, USB unlock silently falls back to the passphrase prompt.
+	- ID: Code Review 20261012 item 10
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Origin: a6cf5dc. No earlier review. Confirmed against the `cryptsetup-luksAddKey` man page.
+	- For `luksAddKey`, `--keyfile-size` limits the existing key. The new key file needs `--new-keyfile-size`. The keyslot ends up holding the whole file, while `usb-unlock` reads only `KEYFILE_SIZE` bytes. The test step after it also lacks `--keyfile-size`.
+	- Sweep: the same advice is in the `usb-unlock.conf` comment.
+
+- The build guide and README say a USB key file that is one photo among many doesn't stand out. Its stick UUID and path are stored in plain text in the UKI on the unencrypted ESP.
+	- ID: Code Review 20261012 item 11
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Origin: a6cf5dc. No earlier review. Confirmed: `99usb-unlock/module-setup.sh` installs `/etc/tukzedo/usb-unlock.conf` into the initrd, so `lsinitrd` on a stolen drive names the file.
+	- The default key name `.keys/<mUID>.hex` also matches the plaintext LUKS label.
+	- Probable fix: state the exposure plainly. Hiding the path needs a different design, filed under enhancements.
+
+- `tkz_rebuild-uki`'s preflight only warns, and part of it never runs. A renamed `zz-rebuild-uki` hook or a missing `x-systemd.after` lets the build go ahead after a 10-second pause.
+	- ID: Code Review 20261012 item 12
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Origin: fe1a936 and 7fe69b2. No earlier review. Confirmed by reading.
+	- details.md calls the preflight a hard assert. `requiredFiles` (the usb-unlock module, `/root/.ssh/*`) is filled but never checked. Branch `zfs-import` adds the `forbiddenModules` check and leaves `requiredFiles` alone.
+	- The local array is declared as `...DirsAndOrContent`, while the code uses `...DirsOrContent`, so the real array is an accidental global.
+
+- The helper scripts in `utility/` don't work. `do_init.bash` and `do_init_user-specific.bash` source `core.sh`, which doesn't exist, and `core.bash`'s hostid check always passes.
+	- ID: Code Review 20261012 item 13
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Origin: 42ded6a, the first commit. No earlier review. Confirmed.
+	- The hostid pipe ends in `od ... /etc/hostid`, which ignores its input, so both lines read the same file. The byte order is also reversed from what `hostid` prints.
+	- `core.bash` still sets up `bpool_*`. `fPrepareZfsForReboot` turns on `zfs-import-scan` on the rescue host, which then auto-imports any attached pool at its next boot. Plausible.
+	- Probable fix: move `utility/` to `legacy/` unless something still uses it.
+	- Decisions: 20261012. Nothing still uses `utility/`. Move it under `legacy/`, and drop the cloning.md step that copies it.
+
+- ✔️ `tkz_user migrate` copied a home that was still in use when the user was logged in only through `su -`, on a TTY, or by cron.
+	- ID: Code Review 20261012 item 14
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Status: Done
+	- Origin: a6cf5dc. No earlier review. Plausible.
+	- It asks only `loginctl`, which the watchdog's recorded TTY rule says isn't enough. Writes after the copy go to the old home, and a busy unmount leads to item 3.
+	- Probable fix: reuse the watchdog's `fIsUserInUse`.
+	- Fixed: `migrate` has a copy of the watchdog's `fIsUserInUse`, so logind, `who` and any process on a TTY all count. It also refuses while the user has any process at all, which covers cron. It checks again after the copy, and rolls back if the user is back.
+		- Each script is deployed on its own, so neither can source the other. The copy names its twin, and a test fails if the 2 differ.
+	- Note: "any process" is stricter than the watchdog's TTY rule on purpose. The watchdog can't wait forever on a stray daemon, but migrate can ask for it to be stopped. The watchdog is unchanged.
+	- Swept: `loginctl`, `who` and the old `fIsLoggedIn` across `usr/local/sbin`. Only the watchdog and `migrate` decide whether a user is logged in.
+	- Test case: `tests/tkz_user_migrate.bash`, cases `in_use_who`, `in_use_su_tty`, `in_use_cron`, `in_use_during_copy` and `parity_in_use_test`. `in_use_loginctl` and `in_use_lingering` passed on main too.
+	- Verified: confirmed on main, where migrate went ahead for a `who` login, a `su -` shell and a cron job. The 5 cases fail on main and pass on the branch.
+	- Branch: migrate-safety
+	- Commit: f28d600
+	- Closed: 20261012-105755
+	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
+
+- `tkz_user` leaves things half done on failure or without saying so.
+	- ID: Code Review 20261012 item 15
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Origin: a6cf5dc (`add`, `migrate`), 4ea029d (`passwd`). No earlier review. Plausible.
+	- `migrate` never changes the GNOME keyring password, which is the problem 4ea029d fixed for `passwd`.
+	- A failed `add`, for example `useradd` failing on a missing `sudo` group, leaves the encrypted home mounted and its key loaded. The watchdog skips it as "no such user" forever, and a rerun refuses because the dataset exists.
+	- If `passwd` can't mount the home, it skips the keyring with no warning and still reports "Done".
+
+- The build guide's password-change section says no script changes the login password and the home key together, then gives manual steps that skip the salt file and the keyring.
+	- ID: Code Review 20261012 item 16
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Origin: a6cf5dc and 4ea029d. No earlier review. Confirmed by reading against `tkz_user`.
+	- On a salted host, following those steps breaks the next login. `tkz_user passwd` does it right.
+	- The guide also says `tkz_user passwd` can reset a forgotten password. For an encrypted home it needs the current one.
+
+- cloning.md says resetting the LUKS keyslots gives a clone its own keys. The volume key stays the same, so every clone can decrypt every other one.
+	- ID: Code Review 20261012 item 17
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Origin: 42ded6a. No earlier review. Confirmed from how LUKS keyslots work. ZFS `change-key` likewise keeps the master key.
+	- Also in cloning.md: `cd tukzedo` names the wrong directory, the Grub fallback steps contradict creation.md, and the list of things to change for a new host leaves out `uki-cmdline.conf`, `usb-unlock.conf`, fstab, the `zfs-list.cache` file name, both sets of SSH host keys, the MOK and the salt file. Renaming the host breaks every encrypted home on a salted system.
+	- Probable fix: `cryptsetup reencrypt`, and re-create encrypted homes.
+
+- `install_dev.bash` overwrites live scripts in place, and its header says it warns first when local files are newer. It doesn't check that.
+	- ID: Code Review 20261012 item 18
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-090724
+	- Origin: dcfe3f1. No earlier review. Plausible for the failure, confirmed for the header.
+	- A dropped download leaves a partial `tkz_zfs-crypthome_login`. That script is PAM `requisite`, so every password login then fails. The README and the build guide both pipe it.
+	- Under `set -u`, a missing `USER` stops it.
+	- Probable fix: download to a temp file beside the target, then `install` and `mv`.
+
+- The usb-unlock initrd script can leave the key stick mounted into the real system, and may never show its IP address for SSH unlock.
+	- ID: Code Review 20261012 item 19
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-090724
+	- Origin: a6cf5dc. No earlier review. Plausible.
+	- A failed `umount` isn't checked. `/run` survives the switch to the real root, so the key file stays readable at `/run/usb-unlock-key`.
+	- The module doesn't install `ip`, so the message reads "No IP address yet" unless another module brings it in.
+
+- `tkz_startup-log` mixes up blocks from callers that run at the same time, and a usage error exits 1, though it says it always exits 0.
+	- ID: Code Review 20261012 item 20
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-090724
+	- Origin: 11a730b. No earlier review. Confirmed with the logger stubbed: for A begin, B begin, A end, B end, A's duration and depth came out wrong.
+	- `tkz-apply-tunables` and `tkz-insure-efi-mount` aren't ordered against each other, so this can happen at boot.
+	- Probable fix: one stack per caller.
+
+- `tkz_show-startup-log -F` hangs, and records from the plain `logger` fallback never show.
+	- ID: Code Review 20261012 item 21
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-090724
+	- Origin: 11a730b. No earlier review. Plausible.
+	- Options are lowercased, but the follow check is case-sensitive, so `journalctl -f` runs inside `$(...)`. The fallback records have no `TKZ_CALLER`, so the filter drops them.
+
+- `tkz_insure-efi-mount` and `tkz_apply-tunables` don't do what their help says.
+	- ID: Code Review 20261012 item 22
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-090724
+	- Origin: 11a730b, 5ee7b63. No earlier review. Plausible.
+	- `tkz_insure-efi-mount --dry-run` exits 0 while the mount is unhealthy, against its exit-code doc. `-v` and `--version` skip sudo but the parser rejects them.
+	- `tkz_apply-tunables --check --emit-native` writes the drop-ins, though `--check` says it changes nothing. `builtInNotes` is filled in a pipeline subshell and never read. `words=( $1 )` globs, which is wrong for a value with `*` or `?`. The `tunables.conf` header leaves out the dracut drop-in.
+
+- `tkz_zfs-mount --audit-all` skips mounts whose path has a space in it.
+	- ID: Code Review 20261012 item 23
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-090724
+	- Origin: 1a19cbe. No earlier review. Confirmed: `/media/u/My Disk` was read as `/media/u/My`.
+	- Probable fix: read the filesystem type first and the target last, and decode `findmnt` escapes.
+
+- ✔️ On branch `zfs-import`, `tkz_zfs-import` reported the wrong reason when a forced import failed, and rejected some `root=` forms its comment says it takes.
+	- ID: Code Review 20261012 item 24
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-090724
+	- Status: Done
+	- Origin: e932ac2, unmerged. No earlier review. Confirmed with stubs for `root=`, plausible for the error text.
+	- The `-f` retry's output goes to `/dev/null`, so "Last error" shows the non-forced message. `rootfstype=zfs root=pool/ds` and a quoted `"root=ZFS=..."` get "no root pool to import" and exit 0. The guide uses `root=ZFS=`, so b28l isn't affected.
+	- Fixed: "Last error" shows the forced try's own message, after "With -f:". `rootfstype=zfs` with `root=pool/ds` works, and quotes are dropped from every command line value, as dracut's `getarg` does.
+	- Swept: the same reader serves `rd.lvm.lv`, `rd.luks.*` and `rd.tkz.zfs_import_timeout`.
+	- Test case: `tests/tkz_zfs-import.bash`, cases `force_fails_last_error`, `root_rootfstype` and `root_quoted`. All 3 fail on `zfs-import` and pass here. `root_not_zfs` and `root_autodetect` pass on both.
+	- Branch: zfs-import-fixes
+	- Commit: 83b2410
+	- Closed: 20261012-115028
+	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
+
+- Small doc errors across the repo.
+	- ID: Code Review 20261012 item 25
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-090724
+	- Origin: a6cf5dc for the build guide, 42ded6a for the rest. No earlier review. Confirmed.
+	- FAQ says the cache file is reset on every boot. On main only `tkz_rebuild-uki` clears it. FAQ links to a guide path that doesn't exist.
+	- contributing.md links `code%20of%20conduct.md`. The file is `code_of_conduct.md`.
+	- design.md relies on fstab rbinds that only b23 has. todo.md has stale entries.
+	- Build guide: `rm -rf /boot/efi/$(cat /etc/machine-id)` wipes the ESP root if machine-id is empty. The live ISO link names `13.7.0` under `current-live`, which breaks on the next point release. The example photo path is left as the active value right after the `.hex` key is made. The user examples reuse `alice` and `guest`, who exist by then. "Turn on Secure Boot" sits in the VM phase.
+	- The login helper still points at the old `x9startup-log` path, which is dead code.
+
+- ✔️ The logout watchdog locked a home whose key an admin loaded on purpose, within seconds. Any SSH session closing starts it, root's included, as does its 5-minute timer.
+	- Type: Bug
+	- Severity: Medium
+	- Status: Done
 	- Opened: 20261012-071500
 	- Keys loaded so `tkz_user passwd` can skip the current-password prompt get unloaded again before it runs.
 	- A runtime mask doesn't help, since the unit file in `/etc/systemd/system` wins over `/run`. Taking the exec bit off the script works as a stopgap.
 	- Wanted: a documented way to pause it, such as a flag file the watchdog checks, or a per-dataset property meaning "held open by an admin".
+	- Decisions: 20261012. A runtime hold per user: `tkz_user hold <user>` and `tkz_user release <user>` write and remove a root-only file under `/run/tkz/`, and the watchdog skips that user while it exists. It is cleared at reboot, so a forgotten hold can't outlive the boot.
+	- Fixed: `tkz_user hold <user>` writes `/run/tkz/hold.<user>`, and `tkz_user release <user>` removes it. The watchdog skips a user while the file is there. `/run` is a tmpfs, so a reboot clears every hold. A uid, or a name that isn't in passwd, is refused.
+		- Past the decision: `hold` takes the watchdog's lock first. It waits for a pass in progress, so no pass is halfway through that user when the hold appears. `status` lists held users under its table.
+		- Documented in the `tkz_user` help, the watchdog's header, design.md, and the build guide, both where the watchdog is set up and under "Add and manage users".
+	- Test case: `tests/tkz_locks.bash`, cases `hold_skips_user`, `hold_waits_for_watchdog`, `hold_needs_real_user` and `hold_status`.
+	- Verified: `hold_skips_user`, `hold_waits_for_watchdog` and `hold_status` fail on main and pass on the branch. `hold_needs_real_user` passes on both, since main has no `hold`. Each also failed with its part of the fix taken out.
+	- Branch: run-tkz-locks
+	- Commit: 5ed36ad
+	- Closed: 20261012-112500
+	- Acceptance signoff: Self-closed. The 2 additions keep within the decision's intent, and the user authorized closing.
+
+- ✔️ `tkz_user` carried on when no dataset was mounted at `/home`. It printed the error, but `local -r parent="$(fHomeParent)"` hid the exit, so `status` exited 0 and the other commands ran with an empty parent.
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-105755
+	- Status: Done
+	- Origin: a6cf5dc.
+	- Fixed: declared and assigned on separate lines, at all 4 call sites.
+	- Test case: `tests/tkz_user_migrate.bash`, case `no_home_dataset`. Fails on main and passes on the branch.
+	- Branch: migrate-safety
+	- Commit: f28d600
+	- Closed: 20261012-105755
+	- Acceptance signoff: Self-closed: mechanical.
 
 - ✔️ `tkz_zfs-mount --audit` and `--audit-all` tried to quarantine the whole live root, on root-on-ZFS.
 	- Opened: 20261011-191500
@@ -87,6 +455,53 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 
 ### New features and enhancements
 
+- Write every file on the ESP to a temp file and rename it into place, and skip images whose signature already checks out.
+	- ID: Code Review 20261012 item 26
+	- Type: Enhancement
+	- Priority: High
+	- Opened: 20261012-090724
+	- `tkz_rebuild-uki` signs UKIs and both `grubx64.efi` copies in place. A power loss or a full ESP mid-write leaves shim with nothing to load. `tkz_resign-sdboot` already uses a temp file.
+	- Re-signing an already signed image adds another signature each run. Not reproduced here.
+
+- Warn about the secrets the UKI puts on the unencrypted ESP, and pin the initrd SSH host key.
+	- ID: Code Review 20261012 item 27
+	- Type: Enhancement
+	- Priority: Medium
+	- Opened: 20261012-090724
+	- `99fix-shadow` puts root's password hash in the UKI, where it can be cracked offline. The initrd SSH host keys are readable there too, so a stolen drive can impersonate the unlock prompt.
+	- Ideas: require a root password used nowhere else, use a `HostKeyAlias <host>-initrd` with the fingerprint saved at build time, and find a USB key design that stores no path in the clear (item 11).
+
+- Offer a recovery key for encrypted homes. A forgotten password loses the home.
+	- ID: Code Review 20261012 item 28
+	- Type: Enhancement
+	- Priority: Medium
+	- Opened: 20261012-090724
+	- The guide should say so where homes are created.
+	- Decisions: 20261012. Document only. The guide and `tkz_user add` say plainly that a forgotten password loses the home, and advise backups. ZFS allows one wrapping key per dataset, and an admin escrow key could open every home.
+
+- Ship the PAM lines as a `pam-configs` profile.
+	- ID: Code Review 20261012 item 29
+	- Type: Enhancement
+	- Priority: Medium
+	- Opened: 20261012-090724
+	- They are inserted inside the block `pam-auth-update` manages. A `pam-auth-update --force` or a profile change drops the `requisite` line, and homes stop mounting at login. Plausible.
+
+- Make the guide's rollback steps rebuild the UKIs.
+	- ID: Code Review 20261012 item 30
+	- Type: Enhancement
+	- Priority: Low
+	- Opened: 20261012-090724
+	- The ESP isn't rolled back, so the default entry can name a kernel whose modules are gone. Rolling back `/etc/shadow` also leaves encrypted-home keys out of step with the passwords.
+
+- Speed up repeat auths and shorten lock holds.
+	- ID: Code Review 20261012 item 31
+	- Type: Enhancement
+	- Priority: Low
+	- Opened: 20261012-090724
+	- Every `sudo` or screen-unlock auth reruns `tkz_zfs-mount`, which means bind mounts plus up to a 120-second lock wait. It could skip that when the whole tree is already mounted.
+	- `tkz_user passwd` holds the watchdog lock while it waits at the prompts, so no home is locked meanwhile. It could prompt first.
+	- `usb-unlock` mounts ext4 with plain `ro`, which still replays a dirty journal onto the key stick. `noload` avoids that.
+
 - A GUI for `tkz_user`: add a user with or without an encrypted home, change a password and the home key together, and migrate a plain home to encrypted.
 	- Opened: 20261011-194500
 	- The CLI does all of this now.
@@ -95,9 +510,26 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Opened: 20261011-194500
 	- `tkz_user passwd` does both. A `pam_exec` hook on the password stack could do it for every password change, `passwd` and desktop tools included.
 
+**Stop here for a next release**
+
+- Create an auto-update program that checks the online repo for a newer stable version, and self-updates if there is one.
+	- Type: Feature
+	- Priority: Medium
+	- Opened: 20261012-111807
+	- It cleans up outdated stuff as part of the update.
+	- It doesn't break anything currently running. Changes take effect at the next reboot.
+	- It is very robust, and migrates previous settings automatically.
+	- It is version-aware, so it can upgrade an arbitrarily old version.
+	- The check script downloads the latest upgrade script and runs it, rather than doing the upgrade itself.
+	- It knows whether it is running on Tukzedo Debian or Tukzedo NixOS.
+
 ### Deferred
 
 ### Canceled
+
+- Code Review 20261012
+	- Decided against: shellcheck SC2010 and SC2162 in `utility/core.bash`. Cosmetic, and item 13 may retire the file.
+	- Decided against: removing `cron` and `sudo` from the `common-session` skip list. On Debian both include `common-session-noninteractive`, so the entries do nothing, but they keep working if that ever changes.
 
 ## Application name ideas
 
