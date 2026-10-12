@@ -46,23 +46,41 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Cause: dracut overwrites each UKI on the ESP in place, and signing waits until every build is done. `set -e` stops at the first failed build. That failure is the newest-kernel-without-ZFS case the n-1 default exists for, and `--all` is the documented deploy step.
 	- Probable fix: build each UKI off the ESP, sign and `sbverify` it, then `mv` it into place, one kernel at a time.
 
-- `tkz_user migrate` moves the contents of any directory into the user's home, and gives the user ownership, if `~/cache`, `~/tmp` or `~/var` is a symlink to it.
+- ✔️ `tkz_user migrate` moved the contents of any directory into the user's home, and gave the user ownership, if `~/cache`, `~/tmp` or `~/var` was a symlink to it.
 	- ID: Code Review 20261012 item 2
 	- Type: Bug
 	- Severity: Critical
 	- Opened: 20261012-090724
+	- Status: Done
 	- Origin: a6cf5dc. No earlier review. Confirmed: the migrate loop run with `zfs` stubbed moved a symlinked target's files into the new home.
 	- Cause: `rsync -a` keeps the link, `[[ -d ]]` and the `mv .../*` glob follow it, and `fFixOwnership` then runs `chown -R`. A link to `/etc/mok` or `/root/.ssh` empties it.
 	- Probable fix: skip any child that is a symlink.
+	- Fixed: a `.cache`, `tmp` or `var` that is a symlink or a file is left as it is, with no dataset of its own. A folder moved aside gets a name with the run's timestamp, so a planted `var.migrating` link isn't followed either. The `chmod 700` in `fFixOwnership` skips symlinks. A `/home/<user>` that is itself a symlink is refused.
+	- Swept: every `mv`, `chmod`, `chown`, `cp` and `rsync` in `tkz_user`, the login helper and the watchdog. `rsync -a` and `chown -R` don't follow links, and `cp -rn /etc/skel/.` refuses to write through one. The `tkz_zfs-mount` quarantine is item 5.
+	- Test case: `tests/tkz_user_migrate.bash`, case `symlinked_children`.
+	- Verified: fails on main, where the files behind the `.cache`, `tmp` and `var.migrating` links were moved, and passes on the branch.
+	- Branch: migrate-safety
+	- Commit: f28d600
+	- Closed: 20261012-105755
+	- Acceptance signoff: Self-closed: reproduced, and the test fails before and passes after.
 
-- A `tkz_user migrate` that fails partway locks the user out. Every later login is refused until the leftover dataset is cleaned up by hand.
+- ◐ A `tkz_user migrate` that fails partway locks the user out. Every later login is refused until the leftover dataset is cleaned up by hand.
 	- ID: Code Review 20261012 item 3
 	- Type: Bug
 	- Severity: Critical
 	- Opened: 20261012-090724
+	- Status: Waiting for testing
 	- Origin: a6cf5dc. No earlier review. Confirmed: the login helper, run against a stubbed `zfs` in that state, refused the login.
 	- Cause: the temp dataset gets the automount user property when it is created, keyed to the new password. The login password changes only at the end. An rsync error, a busy unmount or `~/tmp` being a file stops it in between.
 	- Probable fix: set the property after the final rename, and add an EXIT trap that rolls back.
+	- Fixed: the automount property goes on last, after the password changes. Until then login and the watchdog both ignore the new dataset. Before, the watchdog could also lock the temp dataset in the middle of the copy.
+		- An EXIT trap undoes each finished step in reverse: the password hash, the new dataset's place, then the old home with its mountpoint and canmount. It destroys the copy only once the old home is back, and only if its guid still matches. Ctrl-C rolls back too.
+		- A `~/tmp` that's a file no longer stops it, per item 2.
+	- Test case: `tests/tkz_user_migrate.bash`, cases `fail_rsync`, `fail_child_create`, `fail_chpasswd`, `fail_set_property`, `interrupted_during_copy`, `killed_during_copy` and `tmp_is_a_file`.
+	- Verified: all 7 fail on main and pass on the branch, with a fake zfs. Each runs the real login helper, which takes the old password after a failed migrate.
+	- Needs external testing: real ZFS on a test host with a throwaway user. Run `tkz_user migrate` to the end once. Then run it again on another user, and stop it partway: Ctrl-C during the copy, and a root shell sitting in the old home, which makes its unmount fail. After each failed run, the old home should be back and mounted, `zfs list` should show no `_migrating-` dataset, and the user should log in with the old password.
+	- Branch: migrate-safety
+	- Commit: f28d600
 
 - Any user can stop the logout watchdog, and can block encrypted-home logins, by creating a lock file first.
 	- ID: Code Review 20261012 item 4
@@ -158,14 +176,25 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Probable fix: move `utility/` to `legacy/` unless something still uses it.
 	- Decisions: 20261012. Nothing still uses `utility/`. Move it under `legacy/`, and drop the cloning.md step that copies it.
 
-- `tkz_user migrate` copies a home that is still in use when the user is logged in only through `su -`, on a TTY, or by cron.
+- ✔️ `tkz_user migrate` copied a home that was still in use when the user was logged in only through `su -`, on a TTY, or by cron.
 	- ID: Code Review 20261012 item 14
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
+	- Status: Done
 	- Origin: a6cf5dc. No earlier review. Plausible.
 	- It asks only `loginctl`, which the watchdog's recorded TTY rule says isn't enough. Writes after the copy go to the old home, and a busy unmount leads to item 3.
 	- Probable fix: reuse the watchdog's `fIsUserInUse`.
+	- Fixed: `migrate` has a copy of the watchdog's `fIsUserInUse`, so logind, `who` and any process on a TTY all count. It also refuses while the user has any process at all, which covers cron. It checks again after the copy, and rolls back if the user is back.
+		- Each script is deployed on its own, so neither can source the other. The copy names its twin, and a test fails if the 2 differ.
+	- Note: "any process" is stricter than the watchdog's TTY rule on purpose. The watchdog can't wait forever on a stray daemon, but migrate can ask for it to be stopped. The watchdog is unchanged.
+	- Swept: `loginctl`, `who` and the old `fIsLoggedIn` across `usr/local/sbin`. Only the watchdog and `migrate` decide whether a user is logged in.
+	- Test case: `tests/tkz_user_migrate.bash`, cases `in_use_who`, `in_use_su_tty`, `in_use_cron`, `in_use_during_copy` and `parity_in_use_test`. `in_use_loginctl` and `in_use_lingering` passed on main too.
+	- Verified: confirmed on main, where migrate went ahead for a `who` login, a `su -` shell and a cron job. The 5 cases fail on main and pass on the branch.
+	- Branch: migrate-safety
+	- Commit: f28d600
+	- Closed: 20261012-105755
+	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
 
 - `tkz_user` leaves things half done on failure or without saying so.
 	- ID: Code Review 20261012 item 15
@@ -274,6 +303,19 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- A runtime mask doesn't help, since the unit file in `/etc/systemd/system` wins over `/run`. Taking the exec bit off the script works as a stopgap.
 	- Wanted: a documented way to pause it, such as a flag file the watchdog checks, or a per-dataset property meaning "held open by an admin".
 	- Decisions: 20261012. A runtime hold per user: `tkz_user hold <user>` and `tkz_user release <user>` write and remove a root-only file under `/run/tkz/`, and the watchdog skips that user while it exists. It is cleared at reboot, so a forgotten hold can't outlive the boot.
+
+- ✔️ `tkz_user` carried on when no dataset was mounted at `/home`. It printed the error, but `local -r parent="$(fHomeParent)"` hid the exit, so `status` exited 0 and the other commands ran with an empty parent.
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-105755
+	- Status: Done
+	- Origin: a6cf5dc.
+	- Fixed: declared and assigned on separate lines, at all 4 call sites.
+	- Test case: `tests/tkz_user_migrate.bash`, case `no_home_dataset`. Fails on main and passes on the branch.
+	- Branch: migrate-safety
+	- Commit: f28d600
+	- Closed: 20261012-105755
+	- Acceptance signoff: Self-closed: mechanical.
 
 - ✔️ `tkz_zfs-mount --audit` and `--audit-all` tried to quarantine the whole live root, on root-on-ZFS.
 	- Opened: 20261011-191500
