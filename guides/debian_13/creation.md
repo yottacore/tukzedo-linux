@@ -1057,11 +1057,11 @@ The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Ev
 	~~~
 
 - Install Tukzedo's desktop defaults. Each user can still change all of it.
-	- `/usr/share/lxqt/themes/tukzedo-dark/`: the Tukzedo Dark theme, which users can pick in LXQt Appearance. It's LXQt's dark theme with muted blue accents in place of red, and a translucent panel and menu that Wayfire blurs behind.
+	- `/usr/share/lxqt/themes/tukzedo-dark/`: the Tukzedo Dark theme, which users can pick in LXQt Appearance. It's LXQt's dark theme with muted blue accents in place of red, and a translucent panel and menu.
 	- `/etc/xdg/lxqt/`: a calm dark look (Tukzedo Dark, Breeze dark icons, a muted blue-gray palette, Mona Sans), the Breeze cursor, and a panel with the file manager, terminal and editor in quick launch. The panel leaves out the workspace switcher, which only shows "n/a" on Wayfire, and the X11-only tray.
 	- `/etc/fonts/local.conf`: Mona Sans and Monaspace Argon as the default sans-serif and monospace fonts, for every toolkit.
 	- `/etc/xdg/qterminal.org/qterminal.ini` and `/etc/gtk-3.0/settings.ini`: the terminal in Monaspace Argon, and GTK apps dark.
-	- `/usr/local/share/tukzedo/lxqt-wayfire.ini`: upstream's Wayfire config with the Breeze cursor, dark title bars, blur behind the panel and menus, and a working Alt+F1 menu shortcut. `tkz_startlxqt-wayfire` gives each new user a copy.
+	- `/usr/local/share/tukzedo/lxqt-wayfire.ini`: upstream's Wayfire config with the Breeze cursor, dark title bars, blur settings that are off for now, and a working Alt+F1 menu shortcut. `tkz_startlxqt-wayfire` gives each new user a copy.
 
 	~~~bash
 	cd /root/tkz-repo/filesystem/debian_13

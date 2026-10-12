@@ -474,11 +474,29 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 		- Confirm on b23. With no desktop session for the user and only a `su -` shell open, run `sudo tkz_zfs-crypthome_logout-watchdog --dry-run` from a different account. It should log "has a process on pts/N" and leave everything alone.
 		- The 09:03:22 pass found nothing holding the home and ran moments after a desktop login. Its cause is not confirmed. The unmount rungs that don't signal still run without a second check, so a login in that window can have idle child datasets unmounted under it.
 
-- The LXQt panel's main menu button shows "n/a" instead of an icon, and the quick launch area is empty, on a new user's first LXQt (Wayfire) session.
+- ✔️ The LXQt panel's main menu button was blank, a box showed "n/a", and the quick launch area was empty, on a new user's first LXQt (Wayfire) session. With no menu there was no way to log out.
 	- Type: Bug
-	- Severity: Low
+	- Severity: Medium
+	- Status: Done
 	- Opened: 20261012-122700
 	- Seen on b28l in the VM with the "Install the desktop" package list. A missing icon theme entry or a missing Recommends package is likely.
+	- Cause: `--no-install-recommends` left out `qt6-svg-plugins`, so the menu button's SVG icon didn't draw. The "n/a" box is the workspace switcher, which gets no workspaces from Wayfire. Quick launch starts empty in LXQt's own default.
+	- Fixed: the guide installs `qt6-svg-plugins`, and Tukzedo's `/etc/xdg/lxqt/panel.conf` drops the workspace switcher and the X11-only tray, and puts the file manager, terminal and editor in quick launch.
+	- Verified: on b28l in the VM, the menu button shows, Leave in the menu logs out, and quick launch has the 3 apps.
+	- Test case: none. It's packaging and config; the session above is the check.
+	- Branch: sddm-user-list
+	- Closed: 20261012-131500
+	- Acceptance signoff: Self-closed: seen working by the user.
+
+- In the VM, the LXQt (Wayfire) desktop glitches. The Fancy Menu blinks on and off, redraws leave stale blocks, and Wayfire's blur never showed.
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-131500
+	- Seen on b28l in `tkz-build`, with virtio-gpu and no 3D, so Wayfire renders on the CPU. Not yet tried on the laptop.
+	- Blur is off by default in Tukzedo's Wayfire config for now. Its settings stay in the file.
+	- LXQt's own dark theme turns the menu's translucency off, with a comment calling it buggy. Tukzedo Dark turns it back on, so that may be the blinking.
+	- Ideas: give the VM 3D (virtio-gpu with virgl, SPICE with GL), and try the menu with a solid background to tell the 2 causes apart.
+	- A second, X11-style cursor showed over the arrow with VNC. The VM now uses SPICE with no listen port, which passes the cursor to the viewer. Not confirmed gone yet.
 
 ### New features and enhancements
 
@@ -567,6 +585,7 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Pin the Wayfire version. Its plugin API has broken between releases, such as 0.8 to 0.9.
 	- Fallback if polish matters more than weight: KDE Plasma with KWin effects.
 	- Progress 20261012: the plain desktop is done. The build guide's "Install the desktop" section installs LXQt, Wayfire and SDDM, builds `lxqt-wayland-session` 0.1.1, and adds the "LXQt (Wayfire)" session through `tkz_startlxqt-wayfire`. On b28l in the VM, SDDM offers it by default, and a throwaway user's session started with the panel, desktop and Xwayland. The edge plugin is still to do.
+	- Progress 20261012, later: Tukzedo defaults in `/etc/xdg/lxqt/` and friends. The Tukzedo Dark LXQt theme (muted blue, translucent panel and menu), Breeze dark icons and cursor, Mona Sans and Monaspace Argon, dark GTK, sound through PipeWire, and the SDDM "tukzedo" theme with a user dropdown. All in the guide.
 
 - Create switchable desktop "personalities" that look like macOS, Windows 11, 10, 7, XP and 2000, XFCE4, MATE and others.
 	- Type: Feature
@@ -575,6 +594,7 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Each personality is a bundle of settings: panel layout, menu style, Qt style (Kvantum), icon and cursor themes, and window decorations and animations. A `tkz_personality` tool switches between them.
 	- Windows 11's centered taskbar and the macOS global menu bar likely need custom panel plugins. The rest is config.
 	- Depends on the LXQt and Wayfire item.
+	- Note 20261012: Tukzedo Dark, an LXQt theme picked in LXQt Appearance, is the first such profile.
 
 - Write a system performance stats monitor for the panel or tray that works on any desktop.
 	- Type: Feature
