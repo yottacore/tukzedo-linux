@@ -1,4 +1,5 @@
 #!/bin/bash
+#  shellcheck disable=2154  ## dracut sets moddir, initdir and systemdsystemunitdir.
 ## Dracut module: imports the ZFS root pool before the stock one-shot 'zfs-import-scan.service'.
 ## It activates the rd.lvm.lv= volumes first, retries for up to 60s, and forces past a stale hostid
 ## only when the pool is inside the boot LUKS container.
