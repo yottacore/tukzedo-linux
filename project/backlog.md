@@ -578,6 +578,24 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- GNOME Shell extensions are JavaScript and can't link a C++ library, so the core likely also needs a small D-Bus service for front-ends like that.
 	- LXQt's `sysstat` plugin is a starting point for the LXQt target.
 
+- Make nemo-anywhere the default file manager.
+	- Type: Feature
+	- Priority: Medium
+	- Opened: 20261012-120741
+	- Nemo is GTK, so its theme has to match each personality's Qt look.
+
+- Make silkterm the default terminal.
+	- Type: Feature
+	- Priority: Medium
+	- Opened: 20261012-120741
+
+- Create a new desktop layer with advanced wallpaper handling, along the lines of silkterm's.
+	- Type: Feature
+	- Priority: Medium
+	- Opened: 20261012-120741
+	- On Wayland it's a background surface through the layer-shell protocol, which Wayfire supports. It takes the place of the desktop that LXQt normally gets from `pcmanfm-qt`.
+	- Decide whether it also draws desktop icons, or leaves them to nemo-anywhere.
+
 ### Deferred
 
 ### Canceled
