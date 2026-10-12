@@ -331,10 +331,13 @@ fPopulateCheckArrays(){
 			__fPopulateContentCheckArray      FORB  '/etc/dracut.conf.d/'              '*.conf'            'install_items\+=.*mdadm '
 			if ((require_UKI)); then
 				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                     'uki-cmdline.conf'  'rd.luks.name=[\-0-9a-f]+=[^[:space:]]+'
-				## The stock initrd import force-imports past a stale hostid. See tkz_zfs-import for the fallback.
-				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                     'uki-cmdline.conf'  '^[[:space:]]*zfs_force=1([[:space:]]|$)'
+				## zfs_force=1 makes the stock initrd import force every pool it sees. tkz_zfs-import forces only
+				## pools inside the boot LUKS container.
+				__fPopulateContentCheckArray  FORB  '/etc/kernel/'                     'uki-cmdline.conf'  '^[[:space:]]*(rd\.)?(zfs_force|zfs\.force|zfsforce)=(1|y|on)'
+				## With no network, rd.neednet=1 holds dracut's initqueue, and the whole boot, for 2 minutes.
+				__fPopulateContentCheckArray  FORB  '/etc/kernel/'                     'uki-cmdline.conf'  '^[[:space:]]*rd\.neednet=1'
 			fi
-			__fPopulateContentCheckArray      REQ   '/usr/local/sbin/'                 'tkz_zfs-import'
+			__fPopulateContentCheckArray      REQ   '/usr/sbin/'                       'tkz_zfs-import'
 			__fPopulateContentCheckArray      REQ   '/usr/lib/dracut/modules.d/99tkz-zfs-import/'  'module-setup.sh'
 			__fPopulateContentCheckArray      REQ   '/usr/lib/dracut/modules.d/99tkz-zfs-import/'  'tkz-zfs-import-root.service'
 			if ((require_Grub)); then :
@@ -818,6 +821,7 @@ echo
 ##			- Sign systemd-boot into EFI/BOOT/grubx64.efi, not over BOOTX64.EFI, which is shim now.
 ##			- Error paths called a nonexistent 'error' command.
 ##		- 20261012 tt:
-##			- Require 'zfs_force=1' in uki-cmdline.conf, tkz_zfs-import, and the 99tkz-zfs-import dracut module and
-##			  its files in the UKI. b28l's first boot on its laptop stopped because the one-shot stock import missed.
+##			- Require tkz_zfs-import, and the 99tkz-zfs-import dracut module and its files in the UKI. b28l's
+##			  first boot on its laptop stopped because the one-shot stock import missed.
+##			- Forbid 'zfs_force=1' and 'rd.neednet=1' in uki-cmdline.conf.
 ##			- fCheckModuleContents() now checks forbiddenModules[], such as 'zpool.cache'. It was filled but never checked.

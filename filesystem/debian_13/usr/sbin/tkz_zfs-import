@@ -1,0 +1,500 @@
+#!/bin/bash
+#  shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+#  shellcheck disable=2120  ## 'References arguments, but none are ever passed.' Valid function argument overloading.
+#  shellcheck disable=2012  ## 'Use find instead of ls'. The initrd has ls but not find, and this only lists for a person to read.
+
+##	Purpose:
+##		- Makes sure the ZFS pools a host needs get imported at boot, however often the drive has moved
+##		  between hosts. The stock import runs once, doesn't wait for LVM, and refuses a pool another host
+##		  had last. This one activates the LVs first, retries, and forces where that's safe.
+##		- One script for both halves of the boot:
+##			- In the initrd, the '99tkz-zfs-import' dracut module runs it as '--root', before the stock
+##			  'zfs-import-scan.service'. It imports the pool named by 'root=' on the kernel command line.
+##			- In the real system, 'tkz-zfs-import.service' runs it as '--clear-cache --declared', before
+##			  the stock 'zfs-import-scan.service'. It imports the pools listed in '/etc/tukzedo/zfs-pools.conf'.
+##		- Lives in /usr/sbin, not /usr/local/sbin, because /usr/local is its own dataset, and nothing orders
+##		  its mount before the import.
+##	Syntax:
+##		tkz_zfs-import  [options]  [pool ...]
+##	Options:
+##		    --root ...........: Import the pool named by 'root=ZFS=', 'root=zfs:', or 'root=' with 'rootfstype=zfs'
+##		                        on the kernel command line. Activates the 'rd.lvm.lv=' volumes first, since the
+##		                        stock initrd only does that in its initqueue, which can run much later.
+##		    --declared .......: Import the pools listed in '/etc/tukzedo/zfs-pools.conf'.
+##		    --clear-cache ....: Set 'cachefile=none' on every imported pool, and delete '/etc/zfs/zpool.cache'.
+##		                        Runs before any import in the same call.
+##		    --timeout <sec> ..: Keep retrying for this long. Default 60 for '--root' (or 'rd.tkz.zfs_import_timeout='
+##		                        on the kernel command line), else IMPORT_TIMEOUT from the config file, else 30.
+##		-h, --help ...........: This.
+##	Exit codes:
+##		0 = every requested pool is imported (or there was nothing to do).
+##		1 = at least one pool still isn't imported. The reason is logged.
+##		2 = usage error.
+##	Notes:
+##		- Each try imports without '-f' first. If zpool refuses because another host had the pool last,
+##		  it's forced only when all its devices are inside the LUKS container named by 'rd.luks.name=' or
+##		  'rd.luks.uuid=' on the kernel command line. Nothing else can see those devices until it's unlocked,
+##		  so no other running system can have that pool imported. Every other pool is never forced, and
+##		  zpool's message is logged.
+##		- Every import uses '-N' and '-o cachefile=none'. Datasets are mounted by the stock units later.
+##		- Routine lines go to stdout and failures to stderr. The initrd unit sends stderr to the console too.
+##		  In the real system they also go to 'tkz_startup-log', when it's installed and mounted:
+##			journalctl -b -u tkz-zfs-import-root.service -u tkz-zfs-import.service
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+
+
+set -euo pipefail
+
+## Plain parameter expansion, not basename/readlink. This also runs in the initrd, which may lack them.
+declare -r meName="${0##*/}"
+declare -r startupLogger="/usr/local/sbin/tkz_startup-log"
+declare -r POOLS_CONF="/etc/tukzedo/zfs-pools.conf"
+declare -r CACHE_FILE="/etc/zfs/zpool.cache"
+declare -ri RETRY_INTERVAL=2
+
+## Options
+declare -i doRoot=0
+declare -i doDeclared=0
+declare -i doClearCache=0
+declare    timeoutArg=""
+declare -a argPools=()
+
+## Filled in by fMain().
+declare -a lvmVolumes=()
+declare -a bootLuksUuids=()
+
+
+## The startup logger is on /usr/local, so it's missing in the initrd and early in the real boot.
+function fStartupLog(){ if [[ -x "${startupLogger}" ]]; then "${startupLogger}" "${0}" "$@" || true; fi; }
+
+function fLog(){    echo "[ ${meName}: $* ]";     fStartupLog note "$*"; }
+function fLogErr(){ echo "[ ${meName}: $* ]" >&2; fStartupLog note "$*"; }
+function fLogBegin(){ fStartupLog begin "$*"; }
+function fLogEnd(){   fStartupLog end   "$*"; }
+
+
+function fShowSyntax(){
+	echo
+	sed -n '/^##\tSyntax:/,/^##\tNotes:/p' "${0}" | sed '$d' | sed 's/^##\t\?//; s/^\t/  /'
+	echo
+}
+
+
+function fThrowUsageError(){
+	echo >&2
+	echo "${meName}: $*" >&2
+	echo "Try '${meName} --help'." >&2
+	echo >&2
+	exit 2
+}
+
+
+function fParseArgs(){
+	while [[ "$#" -gt 0 ]]; do
+		case "${1,,}" in
+			"--root")         doRoot=1;       shift ;;
+			"--declared")     doDeclared=1;   shift ;;
+			"--clear-cache")  doClearCache=1; shift ;;
+			"--timeout")      [[ "$#" -ge 2 ]] || fThrowUsageError "'--timeout' needs a value."
+			                  timeoutArg="$2"; shift 2 ;;
+			"-h"|"--help")    fShowSyntax; exit 0 ;;
+			-*)               fThrowUsageError "Unrecognized option: '$1'." ;;
+			*)                argPools+=("$1"); shift ;;
+		esac
+	done
+
+	[[ -z "${timeoutArg}" ]] || [[ "${timeoutArg}" =~ ^[0-9]+$ ]]  ||  fThrowUsageError "'--timeout' needs a whole number of seconds."
+	((doRoot || doDeclared || doClearCache)) || [[ "${#argPools[@]}" -gt 0 ]]  ||  fThrowUsageError "Nothing to do. Give '--root', '--declared', '--clear-cache' or a pool name."
+}
+
+
+function fInsureRoot(){
+	[[ "${EUID}" -eq 0 ]]  &&  return 0
+	local nextArg=""
+	for nextArg in "$@"; do [[ "${nextArg,,}" == "-h" || "${nextArg,,}" == "--help" ]]  &&  return 0; done
+	command -v sudo &>/dev/null  ||  { echo "${meName}: must run as root." >&2; exit 1; }
+	echo "[ ${meName}: not root; re-executing via sudo ... ]"
+	exec sudo -- "${0}" "$@"
+}
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+##	Where the pool names come from.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+function fGetCmdlineArgs(){
+	## Prints the value of every '<name>=<value>' on the kernel command line, one per line.
+	## Quotes are dropped, as dracut's getarg does, so '"root=ZFS=a/b"' and 'root="ZFS=a/b"' both work.
+	local -r argName="${1}"
+	local -a cmdlineArr=()
+	local    nextArg=""
+	read -r -a cmdlineArr < /proc/cmdline || true
+	for nextArg in "${cmdlineArr[@]}"; do
+		nextArg="${nextArg//\"/}"
+		[[ "${nextArg}" == "${argName}="* ]]  &&  echo "${nextArg#"${argName}="}"
+	done
+	return 0
+}
+
+
+function fGetLastCmdlineArg(){
+	## The last one wins, as with the kernel's own parsing.
+	local -a values=()
+	readarray -t values < <(fGetCmdlineArgs "${1}")
+	[[ "${#values[@]}" -gt 0 ]]  &&  echo "${values[-1]}"
+	return 0
+}
+
+
+function fOneLine(){ local str="${1//$'\n'/ }"; echo "${str//  / }"; }
+
+
+function fIndent(){ local line=""; while IFS= read -r line; do echo "    ${line}"; done; }
+
+
+function fGetRootPool(){
+	## Same forms as the stock 'decode_root_args', minus autodetection: 'root=ZFS=pool/ds', 'root=zfs:pool/ds',
+	## and 'root=pool/ds' with 'rootfstype=zfs'.
+	local rootArg="$(fGetLastCmdlineArg root)"
+	case "${rootArg}" in
+		""|zfs|zfs:|zfs:AUTO)  return 0 ;;  ## Autodetect: the pool name isn't known in advance.
+		ZFS=*|zfs:*)           rootArg="${rootArg#zfs:}"; rootArg="${rootArg#ZFS=}" ;;
+		*)                     [[ "$(fGetLastCmdlineArg rootfstype)" == "zfs" ]]  ||  return 0 ;;  ## Not ZFS on root.
+	esac
+	rootArg="${rootArg//+/ }"
+	echo "${rootArg%%/*}"
+}
+
+
+function fGetBootLuksUuids(){
+	## The LUKS containers the boot unlocks, from 'rd.luks.name=<uuid>=<name>' and 'rd.luks.uuid=[luks-]<uuid>',
+	## printed lower case with no dashes, the way they appear in the dm uuid.
+	local nextVal=""
+	for nextVal in $(fGetCmdlineArgs rd.luks.name; fGetCmdlineArgs luks.name; fGetCmdlineArgs rd.luks.uuid; fGetCmdlineArgs luks.uuid); do
+		nextVal="${nextVal%%=*}"
+		nextVal="${nextVal#luks-}"
+		nextVal="${nextVal//-/}"
+		[[ -n "${nextVal}" ]]  &&  echo "${nextVal,,}"
+	done
+	return 0
+}
+
+
+function fGetDeclaredPools(){
+	## Prints the pools listed in the config file, one per line.
+	[[ -f "${POOLS_CONF}" ]]  ||  return 0
+	local -a ZFS_POOLS=()
+	# shellcheck source=/dev/null
+	source "${POOLS_CONF}"
+	local nextPool=""
+	for nextPool in "${ZFS_POOLS[@]}"; do
+		[[ -n "${nextPool}" ]]  &&  echo "${nextPool}"
+	done
+	return 0
+}
+
+
+function fGetTimeout(){
+	## '--timeout' wins, then the per-mode default.
+	local value="${timeoutArg}"
+	if [[ -z "${value}" ]] && ((doRoot)); then
+		value="$(fGetLastCmdlineArg rd.tkz.zfs_import_timeout)"
+		[[ "${value}" =~ ^[0-9]+$ ]]  ||  value=60
+	fi
+	if [[ -z "${value}" ]] && [[ -f "${POOLS_CONF}" ]]; then
+		local IMPORT_TIMEOUT=""
+		# shellcheck source=/dev/null
+		source "${POOLS_CONF}"
+		value="${IMPORT_TIMEOUT}"
+	fi
+	[[ "${value}" =~ ^[0-9]+$ ]]  ||  value=30
+	echo "${value}"
+}
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+##	Which devices are inside the boot LUKS container. Bash builtins and /sys only.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+function fIsBootLuks(){
+	## dm uuid of an open LUKS container: 'CRYPT-LUKS2-<uuid, no dashes>-<name>'.
+	local dmUuid="" nextUuid=""
+	read -r dmUuid 2>/dev/null < "/sys/class/block/${1}/dm/uuid"  ||  return 1
+	[[ "${dmUuid}" == CRYPT-LUKS[0-9]-* ]]  ||  return 1
+	dmUuid="${dmUuid#CRYPT-LUKS[0-9]-}"
+	dmUuid="${dmUuid%%-*}"
+	for nextUuid in "${bootLuksUuids[@]}"; do
+		[[ "${dmUuid,,}" == "${nextUuid}" ]]  &&  return 0
+	done
+	return 1
+}
+
+
+function fSitsOnBootLuks(){
+	## True if block device $1 is a boot LUKS container, or is stacked on one (LVM, partitions, ...).
+	local -r devName="${1}"
+	local -ri depth="${2:-0}"
+	local nextSlave=""
+	fIsBootLuks "${devName}"  &&  return 0
+	((depth < 8))  ||  return 1
+	for nextSlave in "/sys/class/block/${devName}/slaves/"*; do
+		[[ -e "${nextSlave}" ]]  ||  continue
+		fSitsOnBootLuks "${nextSlave##*/}" $((depth + 1))  &&  return 0
+	done
+	return 1
+}
+
+
+function fGetInsideLuksDevices(){
+	## Prints '/dev/mapper/<name>' for every dm device inside a boot LUKS container, the container included.
+	[[ "${#bootLuksUuids[@]}" -gt 0 ]]  ||  return 0
+	local nextDev="" dmName=""
+	for nextDev in /sys/class/block/dm-*; do
+		[[ -e "${nextDev}" ]]                      ||  continue
+		fSitsOnBootLuks "${nextDev##*/}"           ||  continue
+		read -r dmName 2>/dev/null < "${nextDev}/dm/name"  ||  continue
+		echo "/dev/mapper/${dmName}"
+	done
+	return 0
+}
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+##	Actions.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+function fIsImported(){ zpool list -H -o name "${1}" &>/dev/null; }
+
+
+function fClearCache(){
+	## Never fails the caller: a leftover cache file is worth a log line, not a failed boot.
+	local nextPool=""
+	for nextPool in $(zpool list -H -o name 2>/dev/null || true); do
+		if [[ "$(zpool get -H -o value cachefile "${nextPool}" 2>/dev/null || true)" != "none" ]]; then
+			fLog "Setting cachefile=none on '${nextPool}'."
+			zpool set cachefile=none "${nextPool}" 2>&1  ||  fLogErr "WARNING: couldn't set cachefile=none on '${nextPool}'."
+		fi
+	done
+	if [[ -e "${CACHE_FILE}" ]]; then
+		fLog "Deleting '${CACHE_FILE}'."
+		rm -f "${CACHE_FILE}" 2>&1  ||  fLogErr "WARNING: couldn't delete '${CACHE_FILE}'."
+	fi
+	return 0
+}
+
+
+## Per LV: empty until the first pass, then 'active' or the last lvm error.
+declare -A __lvState=()
+
+function fActivateLVs(){
+	## The stock initrd activates rd.lvm.lv= volumes from its initqueue, which with rd.neednet=1 waits for
+	## the network first, and nothing orders the stock pool import after it. So activate them here.
+	[[ "${#lvmVolumes[@]}" -gt 0 ]]  ||  return 0
+	command -v lvm &>/dev/null       ||  return 0
+	local nextLV="" vgPart="" lvPart="" mapperName="" errOut="" firstPass=""
+	local -i activated=0
+	for nextLV in "${lvmVolumes[@]}"; do
+		[[ "${__lvState[${nextLV}]:-}" == "active" ]]  &&  continue
+		firstPass=""; [[ -z "${__lvState[${nextLV}]:-}" ]]  &&  firstPass=1
+		## dm doubles any dash inside the VG and LV names.
+		vgPart="${nextLV%%/*}"; lvPart="${nextLV#*/}"
+		mapperName="${vgPart//-/--}-${lvPart//-/--}"
+		if [[ -e "/dev/mapper/${mapperName}" ]]; then
+			[[ -n "${firstPass}" ]]  &&  fLog "LV '${nextLV}' was already active."
+			__lvState[${nextLV}]="active"
+			continue
+		fi
+		if errOut="$(lvm lvchange -ay --sysinit "${nextLV}" 2>&1)"; then
+			fLog "LV '${nextLV}' wasn't active yet. Activated it."
+			__lvState[${nextLV}]="active"
+			activated=1
+		else
+			[[ -n "${firstPass}" ]]  &&  fLog "LV '${nextLV}' isn't there yet. Will retry. lvm said: $(fOneLine "${errOut}")"
+			__lvState[${nextLV}]="${errOut:-failed}"
+		fi
+	done
+	## lvchange waits for udev itself, but blkid info for the new device is what zpool scans by.
+	((activated))  &&  { udevadm settle --timeout=10 &>/dev/null || true; }
+	return 0
+}
+
+
+function fTryForce(){
+	## Force only when every device of the pool is inside a boot LUKS container. A '-d' per device limits
+	## the search to those, and 'state: ONLINE' says none of its devices were left out.
+	local -r poolName="${1}"
+	local -r refusal="${2}"
+	local -a insideDevs=() devArgs=()
+	local    listing="" nextLine="" thisPool="" poolState="" errOut=""
+	local -i matches=0
+
+	readarray -t insideDevs < <(fGetInsideLuksDevices)
+	if [[ "${#insideDevs[@]}" -gt 0 ]]; then
+		local nextDev=""
+		for nextDev in "${insideDevs[@]}"; do devArgs+=(-d "${nextDev}"); done
+		listing="$(zpool import "${devArgs[@]}" 2>&1 || true)"
+		while IFS= read -r nextLine; do
+			nextLine="${nextLine#"${nextLine%%[![:space:]]*}"}"
+			case "${nextLine}" in
+				"pool: "*)   thisPool="${nextLine#pool: }"; [[ "${thisPool}" == "${poolName}" ]] && matches=$((matches + 1)) ;;
+				"state: "*)  [[ "${thisPool}" == "${poolName}" ]] && poolState="${nextLine#state: }" ;;
+			esac
+		done <<< "${listing}"
+	fi
+
+	if [[ "${matches}" -ne 1 ]] || [[ "${poolState}" != "ONLINE" ]]; then
+		lastError="Not forcing '${poolName}', since its devices aren't all inside the boot LUKS container. Without -f, zpool said: $(fOneLine "${refusal}")"
+		fLogErr "${lastError}"
+		return 2
+	fi
+
+	if errOut="$(zpool import -N -f -o cachefile=none "${devArgs[@]}" "${poolName}" 2>&1)"; then
+		fLog "Imported '${poolName}' with -f, since it's inside the boot LUKS container. Without it, zpool said:"
+		fLog "    $(fOneLine "${refusal}")"
+		return 0
+	fi
+	fIsImported "${poolName}"  &&  return 0
+	lastError="With -f: ${errOut}"
+	return 1
+}
+
+
+function fTryImport(){
+	## One attempt at one pool. 0 = imported, 1 = try again, 2 = give up on it.
+	local -r poolName="${1}"
+	local    errOut=""
+	local -i forceResult=0
+
+	errOut="$(zpool import -N -o cachefile=none "${poolName}" 2>&1)"  &&  { fLog "Imported '${poolName}'."; return 0; }
+	fIsImported "${poolName}"  &&  return 0
+
+	## Only a pool another system had last is worth forcing. Anything else, such as 'no such pool' while
+	## devices are still showing up, gets retried as is.
+	if [[ "${errOut}" == *"another system"* ]] || [[ "${errOut}" == *"import -f"* ]]; then
+		fTryForce "${poolName}" "${errOut}"  ||  forceResult=$?
+		return "${forceResult}"
+	fi
+	lastError="${errOut}"
+	return 1
+}
+
+
+function fShowDiagnostics(){
+	{
+		fLogErr "Pools zpool can see (zpool import):"
+		zpool import 2>&1 | fIndent  ||  true
+		fLogErr "Device mapper (/dev/mapper):"
+		ls -1 /dev/mapper 2>&1 | fIndent  ||  true
+		if command -v lvm &>/dev/null; then
+			fLogErr "Logical volumes (lvm lvs):"
+			lvm lvs 2>&1 | fIndent  ||  true
+		fi
+	} >&2
+	return 0
+}
+
+
+function fImportPools(){
+	## Retries every pool not yet imported until all are, or the timeout runs out.
+	local -ri timeoutSec="${1}" ; shift
+	local -a  pending=("$@")
+	local -a  stillPending=()
+	local -a  givenUp=()
+	local -i  attempt=0
+	local -i  tryResult=0
+	local -ri deadline=$((SECONDS + timeoutSec))
+	local     nextPool=""
+	local     lastError=""
+
+	[[ -d /sys/module/zfs ]]  ||  modprobe zfs 2>&1  ||  fLogErr "WARNING: 'modprobe zfs' failed."
+	fActivateLVs
+
+	while :; do
+		attempt=$((attempt + 1))
+		stillPending=()
+		for nextPool in "${pending[@]}"; do
+			fIsImported "${nextPool}"  &&  continue
+			tryResult=0; fTryImport "${nextPool}"  ||  tryResult=$?
+			case "${tryResult}" in
+				0) ;;
+				2) givenUp+=("${nextPool}") ;;
+				*) stillPending+=("${nextPool}") ;;
+			esac
+		done
+		[[ "${#stillPending[@]}" -eq 0 ]]  &&  break
+		pending=("${stillPending[@]}")
+
+		((attempt == 1))  &&  fLog "Not imported yet: ${pending[*]}. Retrying every ${RETRY_INTERVAL}s for up to ${timeoutSec}s."
+		((SECONDS >= deadline))  &&  break
+
+		sleep "${RETRY_INTERVAL}"
+		udevadm settle --timeout=5 &>/dev/null  ||  true
+		fActivateLVs
+	done
+
+	[[ "${#stillPending[@]}" -eq 0 ]] && [[ "${#givenUp[@]}" -eq 0 ]]  &&  return 0
+	[[ "${#stillPending[@]}" -gt 0 ]]  &&  fLogErr "FAILED after ${attempt} tries over ${timeoutSec}s. Not imported: ${stillPending[*]}"
+	[[ "${#givenUp[@]}"      -gt 0 ]]  &&  fLogErr "FAILED. Not forced, so not imported: ${givenUp[*]}"
+	[[ -n "${lastError}" ]]            &&  fLogErr "Last error: $(fOneLine "${lastError}")"
+	fShowDiagnostics
+	return 1
+}
+
+
+function fMain(){
+	fParseArgs "$@"
+
+	local -a pools=()
+	local    nextPool=""
+
+	fLogBegin
+	((doClearCache))  &&  fClearCache
+
+	readarray -t bootLuksUuids < <(fGetBootLuksUuids)
+	if ((doRoot)); then
+		nextPool="$(fGetRootPool)"
+		if [[ -n "${nextPool}" ]]; then
+			pools+=("${nextPool}")
+			readarray -t lvmVolumes < <(fGetCmdlineArgs rd.lvm.lv)
+		else
+			fLog "No ZFS root pool named on the kernel command line, so none to import."
+		fi
+	fi
+	((doDeclared))  &&  readarray -t -O "${#pools[@]}" pools < <(fGetDeclaredPools)
+	pools+=("${argPools[@]}")
+
+	local -i exitCode=0
+	if [[ "${#pools[@]}" -gt 0 ]]; then
+		fImportPools "$(fGetTimeout)" "${pools[@]}"  ||  exitCode=1
+	fi
+
+	fLogEnd
+	return "${exitCode}"
+}
+
+
+fInsureRoot "$@"
+fMain "$@"
+
+
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## History:
+##		- 20261012 tt: Created, after b28l's first boot on its laptop stopped at "Cannot get properties of
+##		  rpool_edkh3: no such pool available." The stock initrd import ran once and gave up.
+##		- 20261012 tt:
+##			- Moved to /usr/sbin, so tkz-zfs-import.service can run it before /usr/local is mounted.
+##			- '--root' now runs before the stock import and activates the rd.lvm.lv= volumes first. With
+##			  rd.neednet=1 and no network, the stock initrd held LVM back for 2 minutes, so the stock
+##			  import scanned before the LV existed.
+##			- Forces only pools whose devices are all inside the boot LUKS container. 'zfs_force=1' forced
+##			  every pool the initrd could see.
+##			- "Last error" shows the forced try's message. Accepts quoted 'root=' and 'rootfstype=zfs root=pool/ds'.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

@@ -495,14 +495,9 @@ Every step below reads these variables. Keep them in a file and source it in eac
 	## ZFS root
 	root=ZFS=rpool_${mUID}/deb/ROOT
 
-	## Import the root pool even if another system had it last and didn't export it
-	zfs_force=1
-
-	## Network, for SSH unlock
+	## Network, for SSH unlock. It comes up alongside the boot, and the boot doesn't wait for it.
+	## No rd.neednet=1: with no network, it holds the whole initrd for 2 minutes.
 	ip=dhcp
-	rd.neednet=1
-	rd.net.timeout.dhcp=15
-	rd.net.timeout.carrier=5
 
 	## Console
 	consoleblank=0
@@ -614,18 +609,19 @@ The dracut module is installed now. The USB stick itself gets made later, in [Ma
 	~~~
 
 - Make pool imports survive the drive moving between hosts. The stock import runs once and gives up. It doesn't wait for LVM, it refuses a pool that another system had last and didn't export, and it skips its scan if a cache file exists. `tkz_zfs-import` covers each of those:
-	- In the initrd, the `99tkz-zfs-import` dracut module runs it after the stock import. If the root pool isn't imported yet, it activates the LVM volumes and retries for up to 60 seconds, forcing past a stale hostid. If it still fails, it prints what it can see before the emergency shell.
+	- In the initrd, the `99tkz-zfs-import` dracut module runs it before the stock import. It activates the LVM volumes, then imports the root pool, retrying for up to 60 seconds. If another system had the pool last, it forces the import only when all the pool's devices are inside the LUKS container, since no other running system can have those open. If it still fails, it prints what it can see before the emergency shell.
 	- In the running system, `tkz-zfs-import.service` deletes any cache file before the stock scan, then imports the pools listed in `/etc/tukzedo/zfs-pools.conf` the same way. At shutdown it sets `cachefile=none` on every imported pool and deletes the cache file again.
+	- The script goes in `/usr/sbin`, not `/usr/local/sbin` like the other `tkz_` scripts. `/usr/local` is its own dataset, and it isn't mounted yet when the import runs.
 
 	~~~bash
-	install -o root -g root -m 0755 $R/usr/local/sbin/tkz_zfs-import /usr/local/sbin/
+	install -o root -g root -m 0755 $R/usr/sbin/tkz_zfs-import /usr/sbin/
 	cp -r $R/usr/lib/dracut/modules.d/99tkz-zfs-import /usr/lib/dracut/modules.d/
 	install -o root -g root -m 0644 $R/etc/systemd/system/tkz-zfs-import.service /etc/systemd/system/
 	install -o root -g root -m 0644 $R/etc/tukzedo/zfs-pools.conf /etc/tukzedo/
 	systemctl enable tkz-zfs-import.service
 	~~~
 
-	The root pool doesn't go in `zfs-pools.conf`. List only other pools whose disks are always attached. A listed pool that's missing holds up the boot for 30 seconds. External disks stay with the stock import, which never forces.
+	The root pool doesn't go in `zfs-pools.conf`. List only other pools whose disks are always attached. A listed pool that's missing holds up the boot for 30 seconds. External disks are never forced, listed or not.
 
 - Wired network through systemd-networkd, so SSH works on first boot. Desktop network tools and Wi-Fi can come later.
 
@@ -1075,8 +1071,9 @@ If it won't boot, start the VM, or the machine, from the live ISO. Then follow [
 
 - In the initrd:
 	- The USB key, the console prompt and SSH unlock all race to open LUKS. Whichever succeeds first wins.
-	- Then LVM activates, and the ZFS module imports `rpool_<mUID>` by scanning. `zfs_force=1` makes it use `-f`, so a pool another system didn't export still imports.
-	- The stock import runs only once. If it ran before the LVM volume appeared, `tkz-zfs-import-root.service` activates the volume and retries for up to 60 seconds. `rd.tkz.zfs_import_timeout=` on the command line changes that.
+	- The network comes up at the same time, for SSH unlock. The boot doesn't wait for it.
+	- `tkz-zfs-import-root.service` activates the LVM volumes and imports `rpool_<mUID>`, retrying for up to 60 seconds. `rd.tkz.zfs_import_timeout=` on the command line changes that, up to about 4 minutes. If another system had the pool last and didn't export it, it uses `-f`, since the pool is inside the LUKS container.
+	- Then the stock ZFS import scans for any other pools, without `-f`.
 	- It mounts `rpool_<mUID>/deb/ROOT` on `/sysroot`, and switches root.
 
 - In the real system, `tkz-zfs-import.service` deletes any cache file and imports the pools listed in `/etc/tukzedo/zfs-pools.conf`. Then the stock scan imports any others, and systemd mounts the other datasets from the units the ZFS mount generator makes, then the ESP from `/etc/fstab`. GPU drivers load at this point. Encrypted homes stay locked until their user logs in.
@@ -1226,7 +1223,7 @@ These scripts won't necessarily do much good without following an installation g
 
 ## Document history
 
-- 2026-10-12: Added `zfs_force=1` and `tkz_zfs-import`, so pools still import after the drive moves between hosts, or when the stock import scans before LVM is up.
+- 2026-10-12: Added `tkz_zfs-import`, so pools still import after the drive moves between hosts, or when the stock import scans before LVM is up. Dropped `rd.neednet=1`, which held the boot for 2 minutes with no network.
 
 - 2026-10-11: Rewrote the procedure as real steps. Grub and bpool are gone, and shim starts systemd-boot from a 4 GiB ESP. Added USB key unlock, SSH unlock with dracut-sshd 0.7.1, the ZFS mount generator, and `tkz_user`.
 
