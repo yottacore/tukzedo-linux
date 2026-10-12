@@ -1026,12 +1026,48 @@ Up to here, everything ran in the VM. If the target is the machine's own interna
 
 The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Everything here runs as root on the new system.
 
-- Install the packages without Recommends. Plain `apt install lxqt` pulls in about 1,600 packages, all of KDE Plasma, Firefox and Thunderbird among them. This list is about 330.
+- Install the packages without Recommends. Plain `apt install lxqt` pulls in about 1,600 packages, all of KDE Plasma, Firefox and Thunderbird among them. This list is about 340. Leaving out Recommends also leaves out a few things the desktop does need, so they're named here: `qt6-svg-plugins` (without it the panel's menu button and most icons don't draw), a cursor theme, and PipeWire's PulseAudio layer for the volume control.
 
 	~~~bash
 	apt install --no-install-recommends lxqt-core lxqt-qtplugin lxqt-config lxqt-themes pcmanfm-qt qterminal \
 		lximage-qt featherpad wayfire xwayland xdg-desktop-portal-wlr xdg-desktop-portal-lxqt sddm qt6-wayland \
-		breeze-icon-theme fonts-dejavu-core
+		qt6-svg-plugins breeze-icon-theme breeze-cursor-theme pipewire-pulse wireplumber fonts-dejavu-core
+	~~~
+
+- Make Breeze the default cursor. The package registers no alternative of its own, so X11, Xwayland and anything else that asks for the "default" theme would get the old X11 cursor.
+
+	~~~bash
+	mkdir -p /etc/X11/cursors /usr/share/icons/default
+	printf '[Icon Theme]\nInherits=breeze_cursors\n' > /etc/X11/cursors/breeze_cursors.theme
+	update-alternatives --install /usr/share/icons/default/index.theme x-cursor-theme /etc/X11/cursors/breeze_cursors.theme 90
+	~~~
+
+- Install the fonts: Mona Sans for the interface and Monaspace Argon for fixed width. Neither is in Debian. Monaspace has no proportional version, and Mona Sans is its companion. Both are under the SIL Open Font License.
+
+	~~~bash
+	cd /root
+	curl -fsSLO https://github.com/github/mona-sans/releases/download/v2.0.27/fonts-mona-sans_2.0.27_all.deb
+	apt install ./fonts-mona-sans_2.0.27_all.deb
+	curl -fsSLO https://github.com/githubnext/monaspace/releases/download/v1.400/monaspace-static-v1.400.zip
+	mkdir -p /usr/local/share/fonts/monaspace-argon
+	python3 -c 'import sys,zipfile,os; z=zipfile.ZipFile(sys.argv[1]); [open("/usr/local/share/fonts/monaspace-argon/"+os.path.basename(n),"wb").write(z.read(n)) for n in z.namelist() if "/Monaspace Argon/" in n and n.endswith(".otf") and "Wide" not in n]' monaspace-static-v1.400.zip
+	curl -fsSL -o /usr/local/share/fonts/monaspace-argon/LICENSE https://raw.githubusercontent.com/githubnext/monaspace/v1.400/LICENSE
+	rm fonts-mona-sans_2.0.27_all.deb monaspace-static-v1.400.zip
+	fc-cache -f
+	~~~
+
+- Install Tukzedo's desktop defaults. Each user can still change all of it.
+	- `/etc/xdg/lxqt/`: a calm dark look (LXQt's dark theme, Breeze dark icons, a muted blue-gray palette, Mona Sans), the Breeze cursor, and a panel with the file manager, terminal and editor in quick launch. The panel leaves out the workspace switcher, which only shows "n/a" on Wayfire, and the X11-only tray.
+	- `/etc/fonts/local.conf`: Mona Sans and Monaspace Argon as the default sans-serif and monospace fonts, for every toolkit.
+	- `/etc/xdg/qterminal.org/qterminal.ini` and `/etc/gtk-3.0/settings.ini`: the terminal in Monaspace Argon, and GTK apps dark.
+	- `/usr/local/share/tukzedo/lxqt-wayfire.ini`: upstream's Wayfire config with the Breeze cursor and dark title bars. `tkz_startlxqt-wayfire` gives each new user a copy.
+
+	~~~bash
+	cd /root/tkz-repo/filesystem/debian_13
+	for f in etc/xdg/lxqt/lxqt.conf etc/xdg/lxqt/panel.conf etc/xdg/lxqt/session.conf etc/fonts/local.conf \
+		etc/xdg/qterminal.org/qterminal.ini etc/gtk-3.0/settings.ini usr/local/share/tukzedo/lxqt-wayfire.ini; do
+		install -D -o root -g root -m 0644 "$f" "/$f"
+	done
 	~~~
 
 - Build LXQt's Wayland session launcher. Debian 13 doesn't package `lxqt-wayland-session`, so without it LXQt only has an X11 session. Release 0.1.1 matches the LXQt 2.1 in Debian 13; later releases need a later LXQt. Once Debian packages it, use the package instead.
@@ -1058,7 +1094,7 @@ The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Ev
 
 	`cmake --install` puts the upstream file back, so remove it again after any rebuild.
 
-- Give the login screen a theme. With none installed, SDDM shows a plain built-in one. The Tukzedo theme is Elarun with a dropdown of users in place of a typed user name, and a dark top bar. It uses Elarun's images, so that package stays installed. Elarun is one small package; the usual Breeze theme pulls in about 350 packages of KDE Plasma.
+- Give the login screen a theme. With none installed, SDDM shows a plain built-in one. The Tukzedo theme is Elarun with a dropdown of users in place of a typed user name, and a dark top bar with the clock and flat power buttons. It uses Elarun's images, so that package stays installed. Elarun is one small package; the usual Breeze theme pulls in about 350 packages of KDE Plasma.
 
 	~~~bash
 	apt install --no-install-recommends sddm-theme-elarun
@@ -1066,7 +1102,7 @@ The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Ev
 	install -d /usr/share/sddm/themes/tukzedo
 	install -o root -g root -m 0644 usr/share/sddm/themes/tukzedo/* /usr/share/sddm/themes/tukzedo/
 	mkdir -p /etc/sddm.conf.d
-	printf '[Theme]\nCurrent=tukzedo\n' > /etc/sddm.conf.d/tkz-theme.conf
+	printf '[Theme]\nCurrent=tukzedo\nCursorTheme=breeze_cursors\nCursorSize=24\n' > /etc/sddm.conf.d/tkz-theme.conf
 	~~~
 
 	SDDM preselects the last user who logged in. It saves that in `/var/lib/sddm/state.conf`, which is on the persistent `var_lib` dataset.

@@ -23,7 +23,7 @@
 *
 *
 * Tukzedo: Elarun with a dropdown of users in place of the typed user name,
-* and a dark top bar.
+* a dark top bar with the clock and flat power buttons, and a centered form.
 * Images come from the installed Elarun theme, in '../elarun/'.
 ***************************************************************************/
 
@@ -50,6 +50,25 @@ Rectangle {
     }
 
     TextConstants { id: textConstants }
+
+    // Flat icon button for the top bar, using the Breeze dark icons.
+    component PowerButton: Rectangle {
+        id: btn
+        property string icon
+        signal clicked()
+        width: 32; height: 32; radius: 6
+        color: area.containsMouse || activeFocus ? "#33ffffff" : "transparent"
+        Image {
+            anchors.centerIn: parent
+            width: 22; height: 22
+            sourceSize.width: 22; sourceSize.height: 22
+            source: "file:///usr/share/icons/breeze-dark/actions/22/" + btn.icon + ".svg"
+        }
+        MouseArea { id: area; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: btn.clicked() }
+        Keys.onPressed: function (event) {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) { btn.clicked(); event.accepted = true }
+        }
+    }
 
     Connections {
         target: sddm
@@ -105,8 +124,8 @@ Rectangle {
                     anchors.top: parent.top
                     anchors.left: parent.left; anchors.right: parent.right
 
-                    color: "#0b678c"
-                    opacity: 0.75
+                    color: "#123a4d"
+                    opacity: 0.85
 
                     text: sddm.hostName
 
@@ -114,137 +133,73 @@ Rectangle {
                     font.pixelSize: 18
                 }
 
-                Column {
+                // The form and the login arrow center as one group.
+                Row {
                     anchors.centerIn: parent
+                    spacing: 14
 
-                    Row {
-                        z: 1    // the open user list draws over the password row
-                        Image { source: Qt.resolvedUrl("../elarun/images/user_icon.png") }
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 4
 
-                        ComboBox {
-                            id: user_entry
+                        Row {
+                            z: 1    // the open user list draws over the password row
+                            spacing: 6
+                            Image { source: Qt.resolvedUrl("../elarun/images/user_icon.png"); anchors.verticalCenter: parent.verticalCenter }
 
-                            width: 150; height: 30
-                            anchors.verticalCenter: parent.verticalCenter;
+                            ComboBox {
+                                id: user_entry
 
-                            arrowIcon: Qt.resolvedUrl("../elarun/angle-down.png")
+                                width: 180; height: 30
+                                anchors.verticalCenter: parent.verticalCenter;
 
-                            model: userModel
-                            index: userModel.lastIndex
+                                arrowIcon: Qt.resolvedUrl("../elarun/angle-down.png")
 
-                            font.pixelSize: 14
+                                model: userModel
+                                index: userModel.lastIndex
 
-                            onValueChanged: pw_entry.focus = true
+                                font.pixelSize: 14
 
-                            KeyNavigation.backtab: layoutBox; KeyNavigation.tab: pw_entry
+                                onValueChanged: pw_entry.focus = true
+
+                                KeyNavigation.backtab: power_button; KeyNavigation.tab: pw_entry
+                            }
                         }
-                    }
 
-                    Row {
+                        Row {
+                            spacing: 6
+                            Image { source: Qt.resolvedUrl("../elarun/images/lock.png"); anchors.verticalCenter: parent.verticalCenter }
 
-                        Image { source: Qt.resolvedUrl("../elarun/images/lock.png") }
+                            PasswordBox {
+                                id: pw_entry
+                                width: 180; height: 30
+                                anchors.verticalCenter: parent.verticalCenter;
 
-                        PasswordBox {
-                            id: pw_entry
-                            width: 150; height: 30
-                            anchors.verticalCenter: parent.verticalCenter;
+                                tooltipBG: "CornflowerBlue"
 
-                            tooltipBG: "CornflowerBlue"
+                                font.pixelSize: 14
 
-                            font.pixelSize: 14
+                                KeyNavigation.backtab: user_entry; KeyNavigation.tab: login_button
 
-                            KeyNavigation.backtab: user_entry; KeyNavigation.tab: login_button
-
-                            Keys.onPressed: function (event) {
-                                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                                    sddm.login(userNames[user_entry.index], pw_entry.text, sessionIndex)
-                                    event.accepted = true
+                                Keys.onPressed: function (event) {
+                                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                        sddm.login(userNames[user_entry.index], pw_entry.text, sessionIndex)
+                                        event.accepted = true
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                ImageButton {
-                    id: login_button
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.margins: 20
-
-                    source: Qt.resolvedUrl("../elarun/images/login_normal.png")
-
-                    onClicked: sddm.login(userNames[user_entry.index], pw_entry.text, sessionIndex)
-
-		    KeyNavigation.backtab: pw_entry; KeyNavigation.tab: session
-                }
-
-                Item {
-                    height: 20
-                    anchors.bottom: parent.bottom
-                    anchors.left: parent.left; anchors.right: parent.right
-
-                    Row {
-                        id: buttonRow
-                        anchors.left: parent.left
+                    ImageButton {
+                        id: login_button
                         anchors.verticalCenter: parent.verticalCenter
 
-                        spacing: 8
+                        source: Qt.resolvedUrl("../elarun/images/login_normal.png")
 
-                        ImageButton {
-                            id: system_button
-                            source: Qt.resolvedUrl("../elarun/images/system_shutdown.png")
-                            onClicked: sddm.powerOff()
+                        onClicked: sddm.login(userNames[user_entry.index], pw_entry.text, sessionIndex)
 
-			    KeyNavigation.backtab: session; KeyNavigation.tab: reboot_button
-                        }
-
-                        ImageButton {
-                            id: reboot_button
-                            source: Qt.resolvedUrl("../elarun/images/system_reboot.png")
-                            onClicked: sddm.reboot()
-
-                            KeyNavigation.backtab: system_button; KeyNavigation.tab: suspend_button
-                        }
-
-                        ImageButton {
-                            id: suspend_button
-                            source: Qt.resolvedUrl("../elarun/images/system_suspend.png")
-                            visible: sddm.canSuspend
-                            onClicked: sddm.suspend()
-
-                            KeyNavigation.backtab: reboot_button; KeyNavigation.tab: hibernate_button
-                        }
-
-                        ImageButton {
-                            id: hibernate_button
-                            source: Qt.resolvedUrl("../elarun/images/system_hibernate.png")
-                            visible: sddm.canHibernate
-                            onClicked: sddm.hibernate()
-
-                            KeyNavigation.backtab: suspend_button; KeyNavigation.tab: session
-                        }
-                    }
-
-                    Timer {
-                        id: time
-                        interval: 100
-                        running: true
-                        repeat: true
-
-                        onTriggered: {
-                            dateTime.text = Qt.formatDateTime(new Date(), "dddd, dd MMMM yyyy HH:mm AP")
-                        }
-                    }
-
-                    Text {
-                        id: dateTime
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        horizontalAlignment: Text.AlignRight
-
-                        color: "#0b678c"
-                        font.bold: true
-                        font.pixelSize: 12
+                        KeyNavigation.backtab: pw_entry; KeyNavigation.tab: session
                     }
                 }
             }
@@ -290,7 +245,7 @@ Rectangle {
 
                 font.pixelSize: 14
 
-                KeyNavigation.backtab: hibernate_button; KeyNavigation.tab: layoutBox
+                KeyNavigation.backtab: login_button; KeyNavigation.tab: layoutBox
             }
 
             Text {
@@ -319,7 +274,43 @@ Rectangle {
 
                 arrowIcon: Qt.resolvedUrl("../elarun/angle-down.png")
 
-                KeyNavigation.backtab: session; KeyNavigation.tab: user_entry
+                KeyNavigation.backtab: session; KeyNavigation.tab: suspend_button
+            }
+        }
+
+        Text {
+            id: dateTime
+            anchors.centerIn: parent
+            color: "#e4e4e7"
+            font.pixelSize: 15
+
+            function update() { text = Qt.formatDateTime(new Date(), "dddd, d MMMM yyyy    h:mm AP") }
+            Timer { interval: 1000; running: true; repeat: true; triggeredOnStart: true; onTriggered: dateTime.update() }
+        }
+
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 4
+
+            PowerButton {
+                id: suspend_button
+                icon: "system-suspend"; visible: sddm.canSuspend
+                onClicked: sddm.suspend()
+                KeyNavigation.backtab: layoutBox; KeyNavigation.tab: reboot_button
+            }
+            PowerButton {
+                id: reboot_button
+                icon: "system-reboot"; visible: sddm.canReboot
+                onClicked: sddm.reboot()
+                KeyNavigation.backtab: suspend_button; KeyNavigation.tab: power_button
+            }
+            PowerButton {
+                id: power_button
+                icon: "system-shutdown"; visible: sddm.canPowerOff
+                onClicked: sddm.powerOff()
+                KeyNavigation.backtab: reboot_button; KeyNavigation.tab: user_entry
             }
         }
     }

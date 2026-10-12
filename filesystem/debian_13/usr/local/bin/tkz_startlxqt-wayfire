@@ -6,6 +6,10 @@
 ##		  '~/.config/lxqt/session.conf'. With none set, it starts labwc to show a chooser, and labwc
 ##		  isn't installed. So this sets 'compositor=wayfire' for a user who has none yet, then hands off.
 ##		- A compositor the user picked in LXQt Session Settings is left alone.
+##		- Gives a new user Tukzedo's Wayfire config, which has the Breeze cursor and dark title bars.
+##		  'startlxqtwayland' would otherwise copy upstream's. An existing one is left alone.
+##		- Exports the cursor theme from LXQt's settings. Wayfire and Qt both read XCURSOR_THEME, and
+##		  without it some surfaces fall back to X11's core cursor.
 ##	Syntax:
 ##		tkz_startlxqt-wayfire
 ##	Notes:
@@ -20,7 +24,10 @@
 
 set -u
 
-declare -r sessionConf="${XDG_CONFIG_HOME:-${HOME}/.config}/lxqt/session.conf"
+declare -r configHome="${XDG_CONFIG_HOME:-${HOME}/.config}"
+declare -r sessionConf="${configHome}/lxqt/session.conf"
+declare -r wayfireConf="${configHome}/lxqt/wayland/lxqt-wayfire.ini"
+declare -r wayfireTemplate="/usr/local/share/tukzedo/lxqt-wayfire.ini"
 
 fSetDefaultCompositor(){
 	grep -q '^compositor=' "${sessionConf}" 2>/dev/null && return 0
@@ -37,6 +44,22 @@ fSetDefaultCompositor(){
 ## A failed write still lets the user log in; upstream then falls back to its chooser.
 fSetDefaultCompositor || echo "tkz_startlxqt-wayfire: Couldn't set the default compositor in '${sessionConf}'." >&2
 
+if [[ ! -e "${wayfireConf}" && -r "${wayfireTemplate}" ]]; then
+	mkdir -p "$(dirname "${wayfireConf}")" && cp "${wayfireTemplate}" "${wayfireConf}"
+fi
+
+## The setting LXQt Appearance writes, else the system default in /etc/xdg/lxqt/session.conf.
+fCursorSetting(){
+	local file
+	for file in "${sessionConf}" /etc/xdg/lxqt/session.conf; do
+		sed -n "s/^${1}=//p" "${file}" 2>/dev/null | head -n 1 | grep . && return 0
+	done
+	return 1
+}
+XCURSOR_THEME="$(fCursorSetting cursor_theme || echo breeze_cursors)"
+XCURSOR_SIZE="$(fCursorSetting cursor_size || echo 24)"
+export XCURSOR_THEME XCURSOR_SIZE
+
 ## wlroots draws no cursor on most virtual GPUs without this.
 if systemd-detect-virt --quiet 2>/dev/null; then export WLR_NO_HARDWARE_CURSORS=1; fi
 
@@ -48,4 +71,5 @@ exec startlxqtwayland
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 ## History:
 ##		- 20261012 JC: Created.
+##		- 20261012 JC: Tukzedo Wayfire config for new users, and XCURSOR_THEME from LXQt's settings.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
