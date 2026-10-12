@@ -82,15 +82,36 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Branch: migrate-safety
 	- Commit: f28d600
 
-- Any user can stop the logout watchdog, and can block encrypted-home logins, by creating a lock file first.
+- ✔️ Any user can stop the logout watchdog, and can block encrypted-home logins, by creating a lock file first.
 	- ID: Code Review 20261012 item 4
 	- Type: Bug
 	- Severity: Critical
 	- Opened: 20261012-090724
+	- Status: Done
 	- Origin: 11a730b (watchdog), 1a19cbe (`tkz_zfs-mount`), a6cf5dc (`tkz_user`). No earlier review. Confirmed downstream: with a lock file root couldn't open, `tkz_zfs-mount` failed and the login helper refused the login.
 	- Cause: the locks sit in `/dev/shm` and `/run/lock`, which are world-writable and sticky. With `fs.protected_regular=2`, root can't open a file another user created there. The PAM line is `requisite`, and the fallback only covers a missing helper, not a failing one.
 	- Sweep: `tkz_zfs-crypthome_logout-watchdog`, `tkz_zfs-mount`, `tkz_user`.
 	- Probable fix: a root-only dir such as `/run/tkz/`, or `flock` on the script file itself.
+	- Fixed: the watchdog and `tkz_zfs-mount` keep their locks in `/run/tkz`. Each creates it mode 0700, and refuses to run if it's a symlink or isn't owned by root. Only root can create anything in `/run`, so nobody else can plant or hold a lock there. The watchdog's log buffer moved there too.
+		- An older `tkz_startup-log` made `/run/tkz` mode 0755, so the scripts tighten it. `tkz_startup-log` now makes it 0700.
+		- A lock on the script file itself was ruled out. Any user can read the file, so any user can flock it.
+		- The login helper no longer calls the old `x9startup-log`. Where that's still installed, it wrote to `/dev/shm` as root at every login.
+	- Swept: every `flock`, `mktemp`, `/dev/shm`, `/run/lock`, `/tmp` and `/var/tmp` in `filesystem/`, `utility/`, `tests/` and the guides. The `tkz_zfs-mount` bind scratch dir and the `tkz_user migrate` temp mount are directly in `/run`, which only root can write. `tkz_startup-log` uses `/run/tkz` for root, and the caller's own runtime dir otherwise. On main `tkz_user` took no lock. Its new `hold` takes the watchdog's lock, in `/run/tkz`.
+		- Not on main: `tkz_user passwd` on the `keyring-passwd` branch takes the watchdog's lock at the old `/dev/shm` path. Split off as the next item.
+	- Test case: `tests/tkz_locks.bash`, cases `watchdog_lock_root_only`, `watchdog_planted_flock`, `watchdog_planted_dir`, `mount_lock_root_only`, `mount_planted_dir`, `run_dir_tightened`, `run_dir_symlink`, `run_dir_not_root` and `parity_run_dir`. The `*_root_only` cases check every lock held during a run, so a new lock in a shared folder fails them too. They also fail on any file left in `/dev/shm` or `/run/lock`.
+	- Verified: all 9 fail on main and pass on the branch. A held flock or a folder at the old watchdog lock path kept the watchdog from locking a home, and a folder at the old mount lock path refused the login. The watchdog regression tests in private notes and `tests/tkz_user_migrate.bash` still pass.
+	- Branch: run-tkz-locks
+	- Commit: 5ed36ad
+	- Closed: 20261012-111600
+	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
+
+- On the `keyring-passwd` branch, `tkz_user passwd` takes the logout watchdog's lock at the old `/dev/shm` path. With item 4's fix in, it no longer keeps the watchdog off a home it has open, and any user can make it wait 5 minutes and fail.
+	- Type: Bug
+	- Severity: High
+	- Opened: 20261012-111600
+	- Origin: 4ea029d. Split from Code Review 20261012 item 4.
+	- Probable fix: call `fTakeWatchdogLock`, which `tkz_user` has on main. Merging main into `keyring-passwd` conflicts on the `watchdogLock` line, which is the spot to change.
+	- Note: per the 20261012 rule, the fix goes on a branch off `keyring-passwd`.
 
 - `tkz_zfs-mount` quarantine follows a symlink named `.tkz_premount-quarantine`. Root then makes the target mode 700 and moves files into it.
 	- ID: Code Review 20261012 item 5
@@ -297,12 +318,23 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Build guide: `rm -rf /boot/efi/$(cat /etc/machine-id)` wipes the ESP root if machine-id is empty. The live ISO link names `13.7.0` under `current-live`, which breaks on the next point release. The example photo path is left as the active value right after the `.hex` key is made. The user examples reuse `alice` and `guest`, who exist by then. "Turn on Secure Boot" sits in the VM phase.
 	- The login helper still points at the old `x9startup-log` path, which is dead code.
 
-- The logout watchdog locks a home whose key an admin loaded on purpose, within seconds. Any SSH session closing starts it, root's included, as does its 5-minute timer.
+- ◐ The logout watchdog locks a home whose key an admin loaded on purpose, within seconds. Any SSH session closing starts it, root's included, as does its 5-minute timer.
+	- Type: Bug
+	- Severity: Medium
+	- Status: Waiting on signoff
 	- Opened: 20261012-071500
 	- Keys loaded so `tkz_user passwd` can skip the current-password prompt get unloaded again before it runs.
 	- A runtime mask doesn't help, since the unit file in `/etc/systemd/system` wins over `/run`. Taking the exec bit off the script works as a stopgap.
 	- Wanted: a documented way to pause it, such as a flag file the watchdog checks, or a per-dataset property meaning "held open by an admin".
 	- Decisions: 20261012. A runtime hold per user: `tkz_user hold <user>` and `tkz_user release <user>` write and remove a root-only file under `/run/tkz/`, and the watchdog skips that user while it exists. It is cleared at reboot, so a forgotten hold can't outlive the boot.
+	- Fixed: `tkz_user hold <user>` writes `/run/tkz/hold.<user>`, and `tkz_user release <user>` removes it. The watchdog skips a user while the file is there. `/run` is a tmpfs, so a reboot clears every hold. A uid, or a name that isn't in passwd, is refused.
+		- Past the decision: `hold` takes the watchdog's lock first. It waits for a pass in progress, so no pass is halfway through that user when the hold appears. `status` lists held users under its table.
+		- Documented in the `tkz_user` help, the watchdog's header, design.md, and the build guide, both where the watchdog is set up and under "Add and manage users".
+	- Test case: `tests/tkz_locks.bash`, cases `hold_skips_user`, `hold_waits_for_watchdog`, `hold_needs_real_user` and `hold_status`.
+	- Verified: `hold_skips_user`, `hold_waits_for_watchdog` and `hold_status` fail on main and pass on the branch. `hold_needs_real_user` passes on both, since main has no `hold`. Each also failed with its part of the fix taken out.
+	- Branch: run-tkz-locks
+	- Commit: 5ed36ad
+	- Acceptance signoff: waiting. The help and guide wording, and the 2 additions past the decision, are for review.
 
 - ✔️ `tkz_user` carried on when no dataset was mounted at `/home`. It printed the error, but `local -r parent="$(fHomeParent)"` hid the exit, so `status` exited 0 and the other commands ran with an empty parent.
 	- Type: Bug

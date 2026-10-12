@@ -128,7 +128,7 @@ function fParseArgs(){
 function fInsureStateDir(){
 	[[ -d "${stateDir}" ]]  &&  return 0
 	mkdir -p "${stateDir}" 2>/dev/null  ||  return 1
-	chmod 0755 "${stateDir}" 2>/dev/null  ||  true
+	chmod 0700 "${stateDir}" 2>/dev/null  ||  true  ## /run/tkz also has the watchdog's and tkz_zfs-mount's locks.
 	return 0
 }
 
@@ -247,4 +247,5 @@ fi
 ##			- Nesting state moved from '/dev/shm/x9/' to '/run/tkz/' (or the caller's XDG runtime dir), under flock.
 ##			- Depth is the height of a timestamp stack, which also gives 'TKZ_ELAPSED_MS' on each 'end'.
 ##			- No world-writable files.
+##		- 20261012 tt: Makes its state dir 0700, since '/run/tkz' now has other scripts' locks in it.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

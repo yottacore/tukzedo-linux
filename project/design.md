@@ -48,7 +48,7 @@
 	- A fresh process every 5 minutes costs a few milliseconds, and picks up script edits on the next run. No leak can outlive one run.
 
 - Guards against stacking:
-	- The script takes a `flock` on `/dev/shm` and exits at once if another copy holds it.
+	- The script takes a `flock` on a file in `/run/tkz` and exits at once if another copy holds it. Only root can get into that folder. On `/dev/shm`, any user could hold the lock and stop the watchdog.
 	- The unit is `Type=oneshot`. A timer tick or `systemctl start` while it runs joins the existing job, and systemd never starts a second instance.
 	- `TimeoutStartSec=4min` plus `TimeoutStopSec=30s` kill a stuck run, and everything in its cgroup, inside the 5-minute period.
 	- The only thing that can survive is a process stuck in D state on a dead filesystem, and then only one of them.
@@ -58,6 +58,7 @@
 	- `su -` opens no logind session and writes no utmp record. So a user with any process on a TTY also counts as logged in. It has to be a TTY and not any process, or a stray daemon could keep the home mounted forever.
 	- Sessions in the `closing` state count as gone.
 	- Users with linger enabled are skipped as in use.
+	- A user held with `tkz_user hold` is skipped until `tkz_user release`, or a reboot. The hold is a file in `/run/tkz`, which is a tmpfs. `hold` takes the watchdog's lock to write it, so a pass can't be halfway through that user when it appears.
 
 - Unmount order, one rung at a time:
 	- Ask systemd to stop the mount units, parent first. Deepest-first tends to hang, and this order was found to work.
@@ -67,7 +68,7 @@
 	- `zfs unload-key` comes last.
 	- Mountpoint dirs have `chattr +i`, so a half-finished unmount can't let stray writes into the parent dataset.
 
-- Unattended runs write to a buffer on `/dev/shm`, and only append it to the log when something happened or failed. A quiet run leaves no trace. Interactive and dry runs print to the terminal.
+- Unattended runs write to a buffer in `/run/tkz`, and only append it to the log when something happened or failed. A quiet run leaves no trace. Interactive and dry runs print to the terminal.
 
 - Files:
 	- `filesystem/debian_13/usr/local/sbin/tkz_zfs-crypthome_logout-watchdog`

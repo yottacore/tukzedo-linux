@@ -35,6 +35,8 @@
 ##		- Hidden content under a live mount is unreachable anyway, so audit moves it to quarantine. Visible
 ##		  content in an unmounted noauto dir is only reported.
 ##		- All runs serialize on one lock, so the boot audit and a login never work on the same dir at once.
+##		  It's in '/run/tkz', which only root can get into. In a shared folder such as /run/lock, any user
+##		  could hold it, or put a folder in its place, and block every encrypted-home login.
 ##		- Everything important also goes to syslog: journalctl -t tkz_zfs-mount
 ##	Copyright and license ...: Toward bottom of this file.
 ##	History .................: At bottom of this file.
@@ -48,7 +50,8 @@
 set -euo pipefail
 
 declare -r meName="$(basename "${0}")"
-declare -r lockFile="/run/lock/${meName}.lock"
+declare -r runDir="/run/tkz"
+declare -r lockFile="${runDir}/tkz_zfs-mount.lock"
 
 ## Same property and folder names as tkz_zfs-crypthome_login; keep them in step.
 declare -r custProp_Mountpoint="x9.custom.automount:dir"  ## Only consulted when 'mountpoint' is 'legacy'.
@@ -80,6 +83,20 @@ function fLogError(){
 function fUsage(){
 	sed -n '/^##\tModes:/,/^##\tHow the raw dir/p' "${0}" | sed '$d' | cut -c3-
 	exit "${1:-1}"
+}
+
+
+## Same in tkz_user and the logout watchdog; tests/tkz_locks.bash checks.
+function fRunDir(){
+	## Makes sure ${runDir} is a folder only root can get into, for locks and holds. Only root can create
+	## anything in /run, so unlike /dev/shm or /run/lock, nobody else can plant or hold a lock here.
+	[[ -e "${runDir}" || -L "${runDir}" ]]  ||  mkdir -m 0700 "${runDir}" 2>/dev/null  ||  true
+	if [[ -L "${runDir}" || ! -d "${runDir}" || "$(stat -c %u "${runDir}" 2>/dev/null)" != 0 ]]; then
+		echo "'${runDir}' isn't a folder owned by root. Not using it." >&2
+		return 1
+	fi
+	## Older tkz_startup-log made it 0755.
+	chmod 0700 "${runDir}"
 }
 
 
@@ -426,6 +443,10 @@ function fMain(){
 	done
 
 	## One run at a time: the boot audit and a login must not race on the same dir.
+	if ! fRunDir; then
+		fLogError "'${runDir}' isn't a folder owned by root; not running."
+		return 1
+	fi
 	exec 9>"${lockFile}"
 	if ! flock -w 120 9; then
 		fLogError "Could not get lock '${lockFile}' within 120s; another ${meName} is stuck?"
@@ -488,3 +509,5 @@ fMain "$@"
 ##		  immutable-mountpoint rule, the bind-view trick for live mounts, and the audit modes.
 ##		- 20261011 tt: Skip "/" in fWithRawDir(). With root on ZFS, --audit/--audit-all bound "/" onto itself
 ##		  and tried to quarantine the whole live root.
+##		- 20261012 tt: The lock moved from /run/lock to '/run/tkz'. Any user could hold the old one, or put
+##		  a folder in its place, and block encrypted-home logins.

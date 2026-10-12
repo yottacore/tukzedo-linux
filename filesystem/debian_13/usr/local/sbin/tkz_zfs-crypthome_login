@@ -223,10 +223,6 @@ function fMain(){
 
 	fLog "OK All ${mountedCount} of '${targetUser}'s dataset(s) are mounted."
 
-	## Call logging if it exists. Add any logging system you want here, or just remove this part if you don't want it.
-	local -r logExec="/usr/local/bin/x9/sh/x9startup-log"
-	[[ -x "${logExec}" ]]  &&  "${logExec}"  "${0}"  note  "Ran."  || true
-
 	fLog "[ ${meName} done. ]"
 	return 0
 
@@ -272,3 +268,5 @@ fMain "$@"
 ##			- 'set -euo pipefail'.
 ##			- Shebang is '#!/bin/bash -p'. Under su, plain bash dropped euid root and the zfs commands failed.
 ##			  The old version had the same bug, but 'optional' hid it.
+##		- 20261012 tt: Dropped the call to the old x9startup-log. It's gone from Tukzedo boxes, and where it's
+##		  still installed it wrote to /dev/shm as root at every login.
