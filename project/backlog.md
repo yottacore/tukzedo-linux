@@ -273,6 +273,7 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Keys loaded so `tkz_user passwd` can skip the current-password prompt get unloaded again before it runs.
 	- A runtime mask doesn't help, since the unit file in `/etc/systemd/system` wins over `/run`. Taking the exec bit off the script works as a stopgap.
 	- Wanted: a documented way to pause it, such as a flag file the watchdog checks, or a per-dataset property meaning "held open by an admin".
+	- Decisions: 20261012. A runtime hold per user: `tkz_user hold <user>` and `tkz_user release <user>` write and remove a root-only file under `/run/tkz/`, and the watchdog skips that user while it exists. It is cleared at reboot, so a forgotten hold can't outlive the boot.
 
 - ✔️ `tkz_zfs-mount --audit` and `--audit-all` tried to quarantine the whole live root, on root-on-ZFS.
 	- Opened: 20261011-191500
@@ -340,6 +341,7 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Priority: Medium
 	- Opened: 20261012-090724
 	- The guide should say so where homes are created.
+	- Decisions: 20261012. Document only. The guide and `tkz_user add` say plainly that a forgotten password loses the home, and advise backups. ZFS allows one wrapping key per dataset, and an admin escrow key could open every home.
 
 - Ship the PAM lines as a `pam-configs` profile.
 	- ID: Code Review 20261012 item 29
