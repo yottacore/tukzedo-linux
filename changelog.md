@@ -17,7 +17,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `tkz_zfs-mount` mounts a dataset tree and keeps every mountpoint dir empty and `chattr +i`. Stray files found in a mountpoint get moved to a quarantine folder, never deleted. `tkz-zfs-mount-audit.service` checks every mountpoint once per boot. [20260907]
 
+- `tkz_user` adds a user with an optional encrypted ZFS home, moves an existing home onto one, changes passwords, and shows each home's status. [20261011]
+
+- LUKS can unlock at boot from a USB stick that has a key file on it. The key file can be any file that never changes, such as a photo. It's set in `/etc/tukzedo/usb-unlock.conf`. Typing the passphrase, or unlocking over SSH, still works. [20261011]
+
+- `tkz_resign-sdboot` re-signs systemd-boot after an apt upgrade, so it still boots with Secure Boot on. [20261011]
+
 ### Changed
+
+- `guides/.../creation.md` is rewritten as a complete build procedure. There's no Grub or boot pool. Signed UKIs go on a 4 GiB ESP, LUKS unlocks over SSH or from a USB stick, root is on ZFS, most users get an encrypted home, and the drive boots on Intel, AMD or Nvidia graphics. [20261011]
+
+- `tkz_rebuild-uki` works with any pool name, and signs the systemd-boot copy that shim loads. [20261011]
 
 - `tkz_zfs-crypthome_login` mounts through `tkz_zfs-mount`, and falls back to plain `zfs mount` if the helper is missing. [20260907]
 
