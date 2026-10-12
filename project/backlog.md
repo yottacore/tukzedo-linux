@@ -37,6 +37,34 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 
 ### Bugs
 
+- ◐ b28l stops in the initrd when it boots with no network. After the USB key unlocks LUKS, it fails at about 2 minutes with `rpool_edkh3: no such pool available`, then the emergency shell.
+	- Type: Bug
+	- Severity: Critical
+	- Opened: 20261012-083536
+	- Status: Waiting for testing
+	- Origin: `rd.neednet=1` in the build guide's command line, there since 42ded6a. Seen on the laptop's first boot.
+	- Cause: with `rd.neednet=1`, dracut holds its initqueue until the network is up, for up to 2 minutes. The LVM volumes only activate from the initqueue. The stock ZFS import isn't ordered after them, so it ran right after unlock, found no pool, and the mount failed once the wait ran out. With a cable in, it was a race won by about a second.
+	- Confirmed: with the link down, the new import step logged the root LV as not active yet at 9s, and imported the pool. dracut's own LVM scan started at 122s.
+	- Fixed:
+		- `tkz-zfs-import-root.service` runs before the stock import. It activates the `rd.lvm.lv` volumes, then imports the root pool.
+		- `rd.neednet=1` is gone from the guide's command line. So are the 2 `rd.net.timeout` options, which belong to dracut's older network module and did nothing here. The network still comes up for SSH unlock, and the boot doesn't wait for it. `tkz_rebuild-uki` warns if `rd.neednet=1` comes back.
+	- Test case: `tests/tkz_zfs-import.bash`, cases `unit_root_before_stock_scan` and `lv_inactive`. The first fails on `zfs-import` and passes here. The rest is a boot test with the network on and off.
+	- Verified on b28l's drive, booting its own signed UKI with USB unlock:
+		- Link up: login prompt, 16.3s from kernel start. The initrd's SSH server answered from DHCP on, at about 2s.
+		- Link down: the initrd is done in 11.5s. The login prompt comes at 2min 14s, held by the next bug.
+		- Link down with only the import fix, still with `rd.neednet=1`: boots, with the initrd done at 2min 2s.
+	- Needs external testing: boot the laptop with the cable out, then with it in. Both should reach the login prompt, with no emergency shell. `journalctl -b -u tkz-zfs-import-root.service` should say the LV wasn't active yet, or was already active.
+	- Branch: zfs-import-fixes, merged into zfs-import
+	- Commit: 1a12fc6
+
+- With no network, b28l's login prompt waits about 2 minutes after the initrd is done. `open-iscsi.service` waits for `network-online.target` before it checks whether there are any iSCSI targets, and `remote-fs-pre.target`, then `systemd-user-sessions` and every getty, wait for it.
+	- Type: Bug
+	- Severity: Medium
+	- Opened: 20261012-115028
+	- Origin: `dracut-network`, which the build guide installs, recommends `open-iscsi` and `nfs-common`, so apt installs them. Nothing here uses iSCSI.
+	- Measured: in a boot with the link down, `systemd-networkd-wait-online` timed out 2 minutes after the switch to the real system, and `remote-fs-pre.target` and the getty followed within a second. With the link up, the whole boot takes 16s.
+	- Probable fix: mask `open-iscsi.service`, `iscsid.service` and `iscsid.socket` in the build guide, or leave the package out. Check `networking.service` from ifupdown too, which is enabled alongside networkd.
+
 - `tkz_rebuild-uki --all` leaves the UKIs it already rebuilt unsigned when a later kernel fails to build. With Secure Boot on, the default entry and its fallback won't boot.
 	- ID: Code Review 20261012 item 1
 	- Type: Bug
@@ -121,34 +149,59 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Origin: 1a19cbe. No earlier review. The mechanism is confirmed in a simulation. A user can plant the link wherever a raw mountpoint dir sits under a dir they can write, such as a home whose child datasets were partly unmounted.
 	- Probable fix: refuse a base that is a symlink or not owned by root, and create it with `mkdir -m 700` without `-p`.
 
-- On branch `zfs-import`, `tkz-zfs-import.service` can be skipped silently at boot, because it runs its script from `/usr/local`, which may not be mounted yet.
+- ✔️ On branch `zfs-import`, `tkz-zfs-import.service` could be skipped silently at boot, because it ran its script from `/usr/local`, which may not be mounted yet.
 	- ID: Code Review 20261012 item 6
 	- Type: Bug
 	- Severity: High
 	- Opened: 20261012-090724
-	- Origin: e932ac2, unmerged. No earlier review. Plausible.
+	- Status: Done
+	- Origin: e932ac2, unmerged. No earlier review. Confirmed: on b28l, the `usr-local.mount` the ZFS mount generator makes is ordered only after `-.mount`, and nothing orders the unit after it.
 	- Cause: `/usr/local` is its own dataset, and the unit has `DefaultDependencies=no` with nothing ordering it after `usr-local.mount`. When the mount loses the race, `ConditionFileIsExecutable` skips the unit with no error, so the cache file stays and declared pools aren't imported. ExecStop can lose the same race at shutdown.
 	- Probable fix: install the script under `/usr/sbin` as the initrd does, and run it from there.
+	- Fixed: the script is `/usr/sbin/tkz_zfs-import` now, the same path as in the initrd, in the mirror, both units, the dracut module, the guide and the `tkz_rebuild-uki` check.
+	- Swept: the other tkz units run from `/usr/local/sbin`, but each is `After=local-fs.target`.
+	- Test case: `tests/tkz_zfs-import.bash`, case `unit_no_usr_local`. It fails on `zfs-import` and passes here.
+	- Verified: on b28l the unit ran at each test boot from `/usr/sbin`.
+	- Branch: zfs-import-fixes, merged into zfs-import
+	- Commit: 1a12fc6
+	- Closed: 20261012-115028
+	- Acceptance signoff: Self-closed: the test fails before and passes after.
 
-- On branch `zfs-import`, `zfs_force=1` force-imports every pool the initrd can see. The docs and `zfs-pools.conf` say pools outside the list are never forced.
+- ◐ On branch `zfs-import`, `zfs_force=1` force-imports every pool the initrd can see. The docs and `zfs-pools.conf` say pools outside the list are never forced.
 	- ID: Code Review 20261012 item 7
 	- Type: Bug
 	- Severity: High
 	- Opened: 20261012-090724
+	- Status: Waiting for testing
 	- Origin: e932ac2, unmerged. No earlier review. Confirmed in Debian's 90zfs source (2.3.9): `zfs_force=1` adds `-f` to the initrd's `zpool import -aN` scan.
 	- An external pool, or a disk passed through from another running host, gets force-imported at boot. That can corrupt it.
 	- Against: the recorded "keep every import layer" decision lists `zfs_force=1` as a layer. Dropping it reverses that. Correcting the docs does not.
 	- Note: the error text "rpool_edkh3: no such pool available" points more toward the scan racing LVM than toward a stale hostid. The retry with `lvchange -ay` covers that case without `-f`. Check `journalctl -b` on b28l before deciding.
 	- Decisions: 20261012. Force-import only pools whose devices are inside the LUKS container. Pools outside it are never forced, whether or not they are in `zfs-pools.conf`. This replaces the blanket `zfs_force=1` layer.
+	- Note: measured since. The laptop stall was the scan racing LVM, not a stale hostid. See the first bug.
+	- Fixed: per the Decisions row. `zfs_force=1` is gone from the guide, and `tkz_rebuild-uki` warns if it's on the command line. `tkz_zfs-import` forces a pool only when every device of it is inside a LUKS container named by `rd.luks.name` or `rd.luks.uuid`. It lists the pool with a `-d` for each device inside the container, needs it to show `ONLINE` there, and then imports with the same `-d` list. Any other pool is never forced, and the log says why. Only zpool's "in use from another system" refusal leads to `-f`.
+		- The note about keeping every import layer is updated to match.
+	- Test case: `tests/tkz_zfs-import.bash`, cases `stale_hostid_inside_luks`, `stale_hostid_luks_uuid_form`, `stale_hostid_outside_luks`, `stale_hostid_partly_outside` and `stale_hostid_no_luks`. The last 3 fail on `zfs-import`, which forced those pools. Taking out the device check fails `stale_hostid_outside_luks`, and taking out the `ONLINE` check fails `stale_hostid_partly_outside`.
+	- Verified: on b28l, the script finds the LUKS container and both LVs on it, and `zpool import -d` accepts device paths.
+	- Needs external testing: a boot after the root pool was last imported under another hostid and not exported. The journal should show "Imported 'rpool_<mUID>' with -f".
+	- Branch: zfs-import-fixes, merged into zfs-import
+	- Commit: 1a12fc6
 
-- On branch `zfs-import`, a hung `zpool`, `lvm` or `udevadm` call in the initrd hangs the boot forever, with no emergency shell.
+- ✔️ On branch `zfs-import`, a hung `zpool`, `lvm` or `udevadm` call in the initrd hung the boot forever, with no emergency shell.
 	- ID: Code Review 20261012 item 8
 	- Type: Bug
 	- Severity: High
 	- Opened: 20261012-090724
+	- Status: Done
 	- Origin: e932ac2, unmerged. No earlier review. Confirmed with a stub `zpool import` that sleeps: the script ran past its own deadline, which is only checked between attempts.
 	- Cause: `tkz-zfs-import-root.service` has `TimeoutStartSec=infinity`, and its comment says the script stops itself.
 	- Probable fix: `TimeoutStartSec=5min`.
+	- Fixed: `TimeoutStartSec=5min`, which leaves room past the script's 60s default for one slow try. The guide says `rd.tkz.zfs_import_timeout=` goes up to about 4 minutes.
+	- Test case: `tests/tkz_zfs-import.bash`, case `unit_root_timeout`. It fails on `zfs-import`, where the timeout is infinite, and passes here.
+	- Branch: zfs-import-fixes, merged into zfs-import
+	- Commit: 1a12fc6
+	- Closed: 20261012-115028
+	- Acceptance signoff: Self-closed: the test fails before and passes after.
 
 - The build guide's recovery steps fail. The copy of `tkz-vars.sh` it says to save has no UUIDs, and the ESP gets mounted twice, so `zpool export` fails at the end.
 	- ID: Code Review 20261012 item 9
@@ -298,13 +351,21 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Origin: 1a19cbe. No earlier review. Confirmed: `/media/u/My Disk` was read as `/media/u/My`.
 	- Probable fix: read the filesystem type first and the target last, and decode `findmnt` escapes.
 
-- On branch `zfs-import`, `tkz_zfs-import` reports the wrong reason when a forced import fails, and rejects some `root=` forms its comment says it takes.
+- ✔️ On branch `zfs-import`, `tkz_zfs-import` reported the wrong reason when a forced import failed, and rejected some `root=` forms its comment says it takes.
 	- ID: Code Review 20261012 item 24
 	- Type: Bug
 	- Severity: Low
 	- Opened: 20261012-090724
+	- Status: Done
 	- Origin: e932ac2, unmerged. No earlier review. Confirmed with stubs for `root=`, plausible for the error text.
 	- The `-f` retry's output goes to `/dev/null`, so "Last error" shows the non-forced message. `rootfstype=zfs root=pool/ds` and a quoted `"root=ZFS=..."` get "no root pool to import" and exit 0. The guide uses `root=ZFS=`, so b28l isn't affected.
+	- Fixed: "Last error" shows the forced try's own message, after "With -f:". `rootfstype=zfs` with `root=pool/ds` works, and quotes are dropped from every command line value, as dracut's `getarg` does.
+	- Swept: the same reader serves `rd.lvm.lv`, `rd.luks.*` and `rd.tkz.zfs_import_timeout`.
+	- Test case: `tests/tkz_zfs-import.bash`, cases `force_fails_last_error`, `root_rootfstype` and `root_quoted`. All 3 fail on `zfs-import` and pass here. `root_not_zfs` and `root_autodetect` pass on both.
+	- Branch: zfs-import-fixes, merged into zfs-import
+	- Commit: 1a12fc6
+	- Closed: 20261012-115028
+	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
 
 - Small doc errors across the repo.
 	- ID: Code Review 20261012 item 25
