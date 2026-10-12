@@ -60,9 +60,6 @@ XCURSOR_THEME="$(fCursorSetting cursor_theme || echo breeze_cursors)"
 XCURSOR_SIZE="$(fCursorSetting cursor_size || echo 24)"
 export XCURSOR_THEME XCURSOR_SIZE
 
-## wlroots draws no cursor on most virtual GPUs without this.
-if systemd-detect-virt --quiet 2>/dev/null; then export WLR_NO_HARDWARE_CURSORS=1; fi
-
 exec startlxqtwayland
 
 
@@ -72,4 +69,6 @@ exec startlxqtwayland
 ## History:
 ##		- 20261012 JC: Created.
 ##		- 20261012 JC: Tukzedo Wayfire config for new users, and XCURSOR_THEME from LXQt's settings.
+##		- 20261012 JC: Dropped WLR_NO_HARDWARE_CURSORS in VMs. virtio-gpu has a hardware cursor, and the
+##		  software one left VM viewers showing a second, X11-default cursor next to it.
 ##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
