@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=LXQt (Wayfire)
+Comment=LXQt on the Wayfire compositor
+Exec=/usr/local/bin/tkz_startlxqt-wayfire
+TryExec=/usr/local/bin/startlxqtwayland
+DesktopNames=LXQt

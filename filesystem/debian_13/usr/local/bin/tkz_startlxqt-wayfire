@@ -1,0 +1,51 @@
+#!/bin/bash
+
+##	Purpose:
+##		- Starts LXQt on the Wayfire compositor, as the "LXQt (Wayfire)" login session.
+##		- Upstream 'startlxqtwayland' reads the compositor only from the user's own
+##		  '~/.config/lxqt/session.conf'. With none set, it starts labwc to show a chooser, and labwc
+##		  isn't installed. So this sets 'compositor=wayfire' for a user who has none yet, then hands off.
+##		- A compositor the user picked in LXQt Session Settings is left alone.
+##	Syntax:
+##		tkz_startlxqt-wayfire
+##	Notes:
+##		- Run by '/usr/local/share/wayland-sessions/tkz-lxqt-wayfire.desktop', as the user logging in.
+##		- 'startlxqtwayland' is built from lxqt-wayland-session, per the build guide.
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+
+set -u
+
+declare -r sessionConf="${XDG_CONFIG_HOME:-${HOME}/.config}/lxqt/session.conf"
+
+fSetDefaultCompositor(){
+	grep -q '^compositor=' "${sessionConf}" 2>/dev/null && return 0
+	mkdir -p "$(dirname "${sessionConf}")" || return 1
+	if grep -q '^\[General\]' "${sessionConf}" 2>/dev/null; then
+		sed -i '/^\[General\]/a compositor=wayfire' "${sessionConf}"
+	else
+		## QSettings files start with [General]; keep any other sections below it.
+		local -r rest="$(cat "${sessionConf}" 2>/dev/null)"
+		{ printf '[General]\ncompositor=wayfire\n'; [[ -z "${rest}" ]] || printf '%s\n' "${rest}"; } > "${sessionConf}"
+	fi
+}
+
+## A failed write still lets the user log in; upstream then falls back to its chooser.
+fSetDefaultCompositor || echo "tkz_startlxqt-wayfire: Couldn't set the default compositor in '${sessionConf}'." >&2
+
+## wlroots draws no cursor on most virtual GPUs without this.
+if systemd-detect-virt --quiet 2>/dev/null; then export WLR_NO_HARDWARE_CURSORS=1; fi
+
+exec startlxqtwayland
+
+
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## History:
+##		- 20261012 JC: Created.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

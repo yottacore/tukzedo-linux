@@ -474,6 +474,12 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 		- Confirm on b23. With no desktop session for the user and only a `su -` shell open, run `sudo tkz_zfs-crypthome_logout-watchdog --dry-run` from a different account. It should log "has a process on pts/N" and leave everything alone.
 		- The 09:03:22 pass found nothing holding the home and ran moments after a desktop login. Its cause is not confirmed. The unmount rungs that don't signal still run without a second check, so a login in that window can have idle child datasets unmounted under it.
 
+- The LXQt panel's main menu button shows "n/a" instead of an icon, and the quick launch area is empty, on a new user's first LXQt (Wayfire) session.
+	- Type: Bug
+	- Severity: Low
+	- Opened: 20261012-122700
+	- Seen on b28l in the VM with the "Install the desktop" package list. A missing icon theme entry or a missing Recommends package is likely.
+
 ### New features and enhancements
 
 - Write every file on the ESP to a temp file and rename it into place, and skip images whose signature already checks out.
@@ -560,6 +566,7 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Prototype pointer input on a tilted window early. Clicks have to map through the transform.
 	- Pin the Wayfire version. Its plugin API has broken between releases, such as 0.8 to 0.9.
 	- Fallback if polish matters more than weight: KDE Plasma with KWin effects.
+	- Progress 20261012: the plain desktop is done. The build guide's "Install the desktop" section installs LXQt, Wayfire and SDDM, builds `lxqt-wayland-session` 0.1.1, and adds the "LXQt (Wayfire)" session through `tkz_startlxqt-wayfire`. On b28l in the VM, SDDM offers it by default, and a throwaway user's session started with the panel, desktop and Xwayland. The edge plugin is still to do.
 
 - Create switchable desktop "personalities" that look like macOS, Windows 11, 10, 7, XP and 2000, XFCE4, MATE and others.
 	- Type: Feature
