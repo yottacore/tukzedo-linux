@@ -1058,13 +1058,18 @@ The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Ev
 
 	`cmake --install` puts the upstream file back, so remove it again after any rebuild.
 
-- Give the login screen a theme. With none installed, SDDM shows a plain built-in one. Elarun is a single small package; the usual Breeze theme pulls in about 350 packages of KDE Plasma.
+- Give the login screen a theme. With none installed, SDDM shows a plain built-in one. The Tukzedo theme is Elarun with a dropdown of users in place of a typed user name, and a dark top bar. It uses Elarun's images, so that package stays installed. Elarun is one small package; the usual Breeze theme pulls in about 350 packages of KDE Plasma.
 
 	~~~bash
 	apt install --no-install-recommends sddm-theme-elarun
+	cd /root/tkz-repo/filesystem/debian_13
+	install -d /usr/share/sddm/themes/tukzedo
+	install -o root -g root -m 0644 usr/share/sddm/themes/tukzedo/* /usr/share/sddm/themes/tukzedo/
 	mkdir -p /etc/sddm.conf.d
-	printf '[Theme]\nCurrent=elarun\n' > /etc/sddm.conf.d/tkz-theme.conf
+	printf '[Theme]\nCurrent=tukzedo\n' > /etc/sddm.conf.d/tkz-theme.conf
 	~~~
+
+	SDDM preselects the last user who logged in. It saves that in `/var/lib/sddm/state.conf`, which is on the persistent `var_lib` dataset.
 
 - Start the login screen, or reboot. Pick "LXQt (Wayfire)" from the session menu before logging in.
 

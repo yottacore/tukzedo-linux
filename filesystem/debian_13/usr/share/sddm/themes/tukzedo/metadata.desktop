@@ -1,0 +1,13 @@
+[SddmGreeterTheme]
+Name=Tukzedo
+Description=Elarun with a dropdown of users and a dark top bar. Needs the sddm-theme-elarun package for its images.
+Type=sddm-theme
+Author=Reza Fatahilah Shah (Elarun); Tukzedo changes by Jim Collier
+Copyright=(c) 2013, Reza Fatahilah Shah
+License=MIT
+Version=0.1
+MainScript=Main.qml
+ConfigFile=theme.conf
+Theme-Id=tukzedo
+Theme-API=2.0
+QtVersion=6
