@@ -550,6 +550,34 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- The check script downloads the latest upgrade script and runs it, rather than doing the upgrade itself.
 	- It knows whether it is running on Tukzedo Debian or Tukzedo NixOS.
 
+- Make LXQt on the Wayfire compositor the default desktop, with a Wayfire plugin that shrinks and tilts windows as they near a screen edge, for ultrawide monitors.
+	- Type: Feature
+	- Priority: Medium
+	- Opened: 20261012-120630
+	- Why LXQt: Qt, the lightest Qt desktop, stable, modular, and packaged on Debian and NixOS. Its Wayland session runs on a compositor of choice.
+	- Why Wayfire: its C++ plugin API has view transforms for scale, rotation and 3D perspective. The app needs no changes.
+	- Extend upstream with plugins and config rather than fork it. Patch Wayfire only where its API falls short.
+	- Prototype pointer input on a tilted window early. Clicks have to map through the transform.
+	- Pin the Wayfire version. Its plugin API has broken between releases, such as 0.8 to 0.9.
+	- Fallback if polish matters more than weight: KDE Plasma with KWin effects.
+
+- Create switchable desktop "personalities" that look like macOS, Windows 11, 10, 7, XP and 2000, XFCE4, MATE and others.
+	- Type: Feature
+	- Priority: Low
+	- Opened: 20261012-120630
+	- Each personality is a bundle of settings: panel layout, menu style, Qt style (Kvantum), icon and cursor themes, and window decorations and animations. A `tkz_personality` tool switches between them.
+	- Windows 11's centered taskbar and the macOS global menu bar likely need custom panel plugins. The rest is config.
+	- Depends on the LXQt and Wayfire item.
+
+- Write a system performance stats monitor for the panel or tray that works on any desktop.
+	- Type: Feature
+	- Priority: Medium
+	- Opened: 20261012-120630
+	- Shows CPU, memory, disk, network and GPU (AMD, Intel, NVIDIA), read from `/proc`, `/sys` and hwmon.
+	- One shared core that collects the stats, with a build target per desktop: an LXQt panel plugin, a KDE Plasma widget, an XFCE panel plugin, a GNOME Shell extension, and a StatusNotifierItem tray icon for the rest.
+	- GNOME Shell extensions are JavaScript and can't link a C++ library, so the core likely also needs a small D-Bus service for front-ends like that.
+	- LXQt's `sysstat` plugin is a starting point for the LXQt target.
+
 ### Deferred
 
 ### Canceled
