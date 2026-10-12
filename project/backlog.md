@@ -583,6 +583,8 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Priority: Medium
 	- Opened: 20261012-120741
 	- Nemo is GTK, so its theme has to match each personality's Qt look.
+	- nemo-anywhere has no desktop of its own. Desktop icons belong to the new desktop layer.
+	- captain-nemo, a Rust clone of nemo-anywhere, is planned to replace it later.
 
 - Make silkterm the default terminal.
 	- Type: Feature
@@ -594,7 +596,8 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Priority: Medium
 	- Opened: 20261012-120741
 	- On Wayland it's a background surface through the layer-shell protocol, which Wayfire supports. It takes the place of the desktop that LXQt normally gets from `pcmanfm-qt`.
-	- Decide whether it also draws desktop icons, or leaves them to nemo-anywhere.
+	- It also draws the desktop icons. nemo-anywhere has no desktop of its own.
+	- It's a separate project from nemo-anywhere and silkterm.
 
 ### Deferred
 
