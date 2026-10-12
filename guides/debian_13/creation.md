@@ -67,6 +67,7 @@ A step-by-step guide to building your own Tukzedo Linux install, on a Debian 13 
 	- [Make the USB key](#make-the-usb-key)
 	- [Add and manage users](#add-and-manage-users)
 	- [Move the drive to its machine](#move-the-drive-to-its-machine)
+	- [Install the desktop](#install-the-desktop)
 	- [Change passphrases later](#change-passphrases-later)
 	- [Get back in from a live system](#get-back-in-from-a-live-system)
 	- [How it boots](#how-it-boots)
@@ -1019,7 +1020,49 @@ Up to here, everything ran in the VM. If the target is the machine's own interna
 
 - Unlock, log in as root, and run the checks from [First boot](#first-boot) again. Then add the shim boot entry, and turn on Secure Boot as in [Turn on Secure Boot](#turn-on-secure-boot). The MOK enrollment from the VM doesn't carry over; it lives in each machine's firmware.
 
-- The network setup so far only covers wired Ethernet. Wi-Fi and a desktop are later steps.
+- The network setup so far only covers wired Ethernet. Wi-Fi is a later step. The desktop is next.
+
+### Install the desktop
+
+The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Everything here runs as root on the new system.
+
+- Install the packages without Recommends. Plain `apt install lxqt` pulls in about 1,600 packages, all of KDE Plasma, Firefox and Thunderbird among them. This list is about 330.
+
+	~~~bash
+	apt install --no-install-recommends lxqt-core lxqt-qtplugin lxqt-config lxqt-themes pcmanfm-qt qterminal \
+		lximage-qt featherpad wayfire xwayland xdg-desktop-portal-wlr xdg-desktop-portal-lxqt sddm qt6-wayland \
+		breeze-icon-theme fonts-dejavu-core
+	~~~
+
+- Build LXQt's Wayland session launcher. Debian 13 doesn't package `lxqt-wayland-session`, so without it LXQt only has an X11 session. Release 0.1.1 matches the LXQt 2.1 in Debian 13; later releases need a later LXQt. Once Debian packages it, use the package instead.
+
+	~~~bash
+	apt install --no-install-recommends git ca-certificates cmake make g++ pkg-config lxqt-build-tools liblxqt-dev \
+		xdg-user-dirs qt6-l10n-tools qt6-tools-dev libxkbcommon-dev libkf6windowsystem-dev
+	mkdir -p /usr/local/src && cd /usr/local/src
+	git clone --depth 1 --branch 0.1.1 https://github.com/lxqt/lxqt-wayland-session.git
+	cd lxqt-wayland-session
+	cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release
+	cmake --build build && cmake --install build
+	~~~
+
+- Add the "LXQt (Wayfire)" login session, and remove upstream's "LXQt (Wayland)" one. Upstream's starts labwc to ask for a compositor when a user hasn't picked one, and labwc isn't installed. `tkz_startlxqt-wayfire` sets Wayfire for such a user, then starts the same launcher. A compositor picked later in LXQt Session Settings is kept.
+
+	~~~bash
+	git -C /root/tkz-repo pull --ff-only
+	cd /root/tkz-repo/filesystem/debian_13
+	install -o root -g root -m 0755 usr/local/bin/tkz_startlxqt-wayfire /usr/local/bin/
+	install -o root -g root -m 0644 usr/local/share/wayland-sessions/tkz-lxqt-wayfire.desktop /usr/local/share/wayland-sessions/
+	rm /usr/local/share/wayland-sessions/lxqt-wayland.desktop
+	~~~
+
+	`cmake --install` puts the upstream file back, so remove it again after any rebuild.
+
+- Start the login screen, or reboot. Pick "LXQt (Wayfire)" from the session menu before logging in.
+
+	~~~bash
+	systemctl start sddm
+	~~~
 
 ### Change passphrases later
 
@@ -1213,6 +1256,8 @@ These scripts won't necessarily do much good without following an installation g
 	~~~
 
 ## Document history
+
+- 2026-10-12: Added "Install the desktop": LXQt on Wayfire, with SDDM and a Wayland session built from `lxqt-wayland-session`.
 
 - 2026-10-12: `tkz_user hold` and `release` keep the logout watchdog away from one user's home. The watchdog's and `tkz_zfs-mount`'s locks moved to `/run/tkz`, where other users can't get at them.
 
