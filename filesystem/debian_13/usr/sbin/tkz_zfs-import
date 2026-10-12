@@ -12,8 +12,8 @@
 ##			  'zfs-import-scan.service'. It imports the pool named by 'root=' on the kernel command line.
 ##			- In the real system, 'tkz-zfs-import.service' runs it as '--clear-cache --declared', before
 ##			  the stock 'zfs-import-scan.service'. It imports the pools listed in '/etc/tukzedo/zfs-pools.conf'.
-##		- Lives in /usr/sbin, not /usr/local/sbin, because /usr/local is its own dataset and isn't mounted
-##		  until after the pools are imported.
+##		- Lives in /usr/sbin, not /usr/local/sbin, because /usr/local is its own dataset, and nothing orders
+##		  its mount before the import.
 ##	Syntax:
 ##		tkz_zfs-import  [options]  [pool ...]
 ##	Options:
