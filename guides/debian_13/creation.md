@@ -1057,10 +1057,11 @@ The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Ev
 	~~~
 
 - Install Tukzedo's desktop defaults. Each user can still change all of it.
-	- `/etc/xdg/lxqt/`: a calm dark look (LXQt's dark theme, Breeze dark icons, a muted blue-gray palette, Mona Sans), the Breeze cursor, and a panel with the file manager, terminal and editor in quick launch. The panel leaves out the workspace switcher, which only shows "n/a" on Wayfire, and the X11-only tray.
+	- `/usr/share/lxqt/themes/tukzedo-dark/`: the Tukzedo Dark theme, which users can pick in LXQt Appearance. It's LXQt's dark theme with muted blue accents in place of red, and a translucent panel and menu that Wayfire blurs behind.
+	- `/etc/xdg/lxqt/`: a calm dark look (Tukzedo Dark, Breeze dark icons, a muted blue-gray palette, Mona Sans), the Breeze cursor, and a panel with the file manager, terminal and editor in quick launch. The panel leaves out the workspace switcher, which only shows "n/a" on Wayfire, and the X11-only tray.
 	- `/etc/fonts/local.conf`: Mona Sans and Monaspace Argon as the default sans-serif and monospace fonts, for every toolkit.
 	- `/etc/xdg/qterminal.org/qterminal.ini` and `/etc/gtk-3.0/settings.ini`: the terminal in Monaspace Argon, and GTK apps dark.
-	- `/usr/local/share/tukzedo/lxqt-wayfire.ini`: upstream's Wayfire config with the Breeze cursor and dark title bars. `tkz_startlxqt-wayfire` gives each new user a copy.
+	- `/usr/local/share/tukzedo/lxqt-wayfire.ini`: upstream's Wayfire config with the Breeze cursor, dark title bars, blur behind the panel and menus, and a working Alt+F1 menu shortcut. `tkz_startlxqt-wayfire` gives each new user a copy.
 
 	~~~bash
 	cd /root/tkz-repo/filesystem/debian_13
@@ -1068,6 +1069,7 @@ The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Ev
 		etc/xdg/qterminal.org/qterminal.ini etc/gtk-3.0/settings.ini usr/local/share/tukzedo/lxqt-wayfire.ini; do
 		install -D -o root -g root -m 0644 "$f" "/$f"
 	done
+	cp -r usr/share/lxqt/themes/tukzedo-dark /usr/share/lxqt/themes/
 	~~~
 
 - Build LXQt's Wayland session launcher. Debian 13 doesn't package `lxqt-wayland-session`, so without it LXQt only has an X11 session. Release 0.1.1 matches the LXQt 2.1 in Debian 13; later releases need a later LXQt. Once Debian packages it, use the package instead.
