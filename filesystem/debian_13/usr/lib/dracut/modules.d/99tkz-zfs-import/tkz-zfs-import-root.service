@@ -1,0 +1,20 @@
+## Initrd only. Installed by the 99tkz-zfs-import dracut module.
+## Fallback for the stock 'zfs-import-scan.service', which runs once, doesn't wait for LVM, and gives up.
+## Does nothing if the root pool is already imported.
+
+[Unit]
+Description=Import the ZFS root pool, retrying and forcing if needed
+Documentation=file:/usr/local/sbin/tkz_zfs-import
+DefaultDependencies=no
+After=zfs-import-scan.service zfs-import-cache.service
+After=cryptsetup.target systemd-udev-settle.service
+Before=zfs-import.target zfs-env-bootfs.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/tkz_zfs-import --root
+## The script stops itself after rd.tkz.zfs_import_timeout= seconds (default 60).
+TimeoutStartSec=infinity
+StandardOutput=journal+console
+StandardError=journal+console

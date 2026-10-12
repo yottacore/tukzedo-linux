@@ -331,7 +331,12 @@ fPopulateCheckArrays(){
 			__fPopulateContentCheckArray      FORB  '/etc/dracut.conf.d/'              '*.conf'            'install_items\+=.*mdadm '
 			if ((require_UKI)); then
 				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                     'uki-cmdline.conf'  'rd.luks.name=[\-0-9a-f]+=[^[:space:]]+'
+				## The stock initrd import force-imports past a stale hostid. See tkz_zfs-import for the fallback.
+				__fPopulateContentCheckArray  REQ   '/etc/kernel/'                     'uki-cmdline.conf'  '^[[:space:]]*zfs_force=1([[:space:]]|$)'
 			fi
+			__fPopulateContentCheckArray      REQ   '/usr/local/sbin/'                 'tkz_zfs-import'
+			__fPopulateContentCheckArray      REQ   '/usr/lib/dracut/modules.d/99tkz-zfs-import/'  'module-setup.sh'
+			__fPopulateContentCheckArray      REQ   '/usr/lib/dracut/modules.d/99tkz-zfs-import/'  'tkz-zfs-import-root.service'
 			if ((require_Grub)); then :
 				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_DEFAULT="1>2"'
 				__fPopulateContentCheckArray  REQ  '/etc/default/'                     'grub'              'GRUB_PRELOAD_MODULES=.*[^a-z0-9]zfs[^a-z0-9]'
@@ -343,6 +348,9 @@ fPopulateCheckArrays(){
 			requiredModules+=("zfs-import-scan.service")
 			requiredModules+=("zfs-import.target")
 			requiredModules+=("zfs.ko")
+			requiredModules+=("sbin/tkz_zfs-import")
+			requiredModules+=("tkz-zfs-import-root.service")
+			requiredModules+=("zfs-import-scan.service.d/tkz-nonfatal.conf")
 			forbiddenModules+=("mdadm")
 			forbiddenModules+=("zpool.cache")
 		fi
@@ -563,7 +571,7 @@ fCheckModuleContents(){
 	[[ ${#requiredModules[@]} -le 0 ]] && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No populated module content array to check for in '${modFile}' via 'grep -P'.\n"  >&2 ; return 1; }
 
 	## Get list of modules
-	echo -e "\n[ Checking '${modFile}' for modules (0 is not good) ... ]\n"
+	echo -e "\n[ Checking '${modFile}' for modules (0 is not good, except for '(forbidden)', which must be 0) ... ]\n"
 	allModList="$(lsinitrd "${modFile}" 2>/dev/null | grep -P ' root[ ]+root ')"
 	[[ -z "${allModList}" ]] && { echo -e "\nERROR in ${meName}.${FUNCNAME[0]}(): No modules were listed in '${modFile}'. Could be a bug in function?\n" >&2 ; return 1; }
 
@@ -579,6 +587,15 @@ fCheckModuleContents(){
 		outStr="${outStr}${sItem}\t${grepCount}"
 	done
 
+	## Check absence of forbidden modules. These were collected but never checked before 20261012.
+	for sItem in "${forbiddenModules[@]}"; do
+		[[ -z "${sItem}" ]] && continue
+		grepCount=0 ; grepCount=$(grep -Pc "${sItem}" <<< "${allModList}" 2>/dev/null || true)
+		((grepCount > 0)) && flaggedResults=1
+		[[ -n "${outStr}" ]] && outStr="${outStr}\n"
+		outStr="${outStr}${sItem} (forbidden)\t${grepCount}"
+	done
+
 	## Format list and output results
 	outStr="$(echo -e "${outStr}" | sort -u | column -t -s $'\t' | sed 's/^/  /')"
 	echo -e "${outStr}"
@@ -587,7 +604,7 @@ fCheckModuleContents(){
 	else
 		echo
 		echo "******** WARNING *********"
-		echo "At least one necessary module wasn't found in the UKI .efi, as listed above."
+		echo "At least one necessary module wasn't found in the UKI .efi, or a forbidden one was, as listed above."
 		echo "(will resume in 10 seconds)"
 		echo "**************************"
 		echo
@@ -800,3 +817,7 @@ echo
 ##			- Accept 'layout=other' in install.conf. kernel-install only acts on 'bls' and 'uki', so either value keeps it off the ESP.
 ##			- Sign systemd-boot into EFI/BOOT/grubx64.efi, not over BOOTX64.EFI, which is shim now.
 ##			- Error paths called a nonexistent 'error' command.
+##		- 20261012 tt:
+##			- Require 'zfs_force=1' in uki-cmdline.conf, tkz_zfs-import, and the 99tkz-zfs-import dracut module and
+##			  its files in the UKI. b28l's first boot on its laptop stopped because the one-shot stock import missed.
+##			- fCheckModuleContents() now checks forbiddenModules[], such as 'zpool.cache'. It was filled but never checked.

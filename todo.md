@@ -34,8 +34,6 @@ This is an easier way to brainstorm and prioritize tasks, before creating issues
 
 | Created  | Issue#                                                  |Score|Imp|Urg|Eff|Aff| Started  | by | Completed | Description | Notes
 |:---------|-------:                                                 |----:|--:|--:|--:|--:|:---------|:---|:----------|:------------|:------
-| 20260413 |                                                         | 2.0 | 1 | 2 | 3 |   |  | tt |  | Set `cachefile=none` on rpool, on every boot. Figure out the most logical and reliable place to do this (a `systemd` service may not be the best.)
-| 20260413 |                                                         | 2.3 | 1 | 3 | 3 |   |  | tt |  | Find where rpool is first imported in init process, and add `-f` to it, to get around ZFS host ID and zfs.cache mismatch problems. At least until 'Boot-time filesystem mounting' task is finished.
 | 20260410 |                                                         | 2.3 | 1 | 2 | 4 |   |  | tt |  | ZFS user home encryption: Improve PAM script to unlock ZFS filesystem on login
 | 20260410 |                                                         | 2.3 | 1 | 2 | 4 |   |  | tt |  | ZFS user home encryption: Improve watchdog to close encrypted home folders after logout
 | 20260410 |                                                         | 3.3 | 3 | 3 | 4 |   |  | tt |  | Boot-time filesystem mounting: Gain deterministic control over mount timing and order
@@ -52,6 +50,8 @@ This is an easier way to brainstorm and prioritize tasks, before creating issues
 
 | Created  | Issue# |Score|Imp|Urg|Eff|Aff| Started  | by | Completed | Description | Notes
 |:---------|:-------|----:|--:|--:|--:|--:|:---------|:---|:----------|:------------|:-----
+| 20260413 |                                                         | 2.0 | 1 | 2 | 3 |   | 20261012 | tt |  | Set `cachefile=none` on rpool, on every boot. Figure out the most logical and reliable place to do this (a `systemd` service may not be the best.) | Built 20261012: `tkz-zfs-import.service` (`tkz_zfs-import --clear-cache`) at boot and shutdown. Not yet deployed or tested on a real boot.
+| 20260413 |                                                         | 2.3 | 1 | 3 | 3 |   | 20261012 | tt |  | Find where rpool is first imported in init process, and add `-f` to it, to get around ZFS host ID and zfs.cache mismatch problems. At least until 'Boot-time filesystem mounting' task is finished. | Built 20261012: `zfs_force=1` in uki-cmdline.conf, plus the `99tkz-zfs-import` dracut module as a retrying fallback. Not yet deployed or tested on a real boot.
 | 20260402 |        | 2.0 | 1 | 2 | 3 |   | 20260320 | tt |  | Finish "Cloning" steps in `.md` doc.
 | 20260402 |        | 2.3 | 2 | 2 | 3 |   | 20260320 | tt |  | Move "Creation" steps to formatted `.md` doc.
 
