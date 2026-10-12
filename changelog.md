@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `tkz_resign-sdboot` re-signs systemd-boot after an apt upgrade, so it still boots with Secure Boot on. [20261011]
 
+- `tkz_user passwd` also changes the user's GNOME login keyring password, given their current password, so the keyring keeps unlocking at login. It works whether the user is logged in or not, through the new `tkz_keyring-passwd`. While it has a logged-out user's encrypted home open, it holds off the logout watchdog, and it locks the home again on any exit. [20261012]
+
 ### Changed
 
 - `guides/.../creation.md` is rewritten as a complete build procedure. There's no Grub or boot pool. Signed UKIs go on a 4 GiB ESP, LUKS unlocks over SSH or from a USB stick, root is on ZFS, most users get an encrypted home, and the drive boots on Intel, AMD or Nvidia graphics. [20261011]

@@ -9,6 +9,8 @@
 ##		- An encrypted home is unlocked at login by tkz_zfs-crypthome_login, using the login password as the
 ##		  ZFS key. So the 2 must always match. Use 'tkz_user passwd' instead of plain 'passwd' for those users.
 ##		- The ZFS key is built the same way the login helper builds it, including the optional salt file.
+##		- 'passwd' also re-encrypts the user's GNOME login keyring, via tkz_keyring-passwd. Root setting a password
+##		  with 'chpasswd' otherwise leaves the keyring on the old one, and it stops unlocking at login.
 ##	Copyright and license ...: Toward bottom of this file.
 ##	History .................: At bottom of this file.
 
@@ -18,6 +20,8 @@ declare -r meName="$(basename "${0}")"
 declare -r custProp_UserName="x9.custom.automount:user"
 declare -r pwdLongSaltFile="/etc/cryptkeys/zfs_pam_longsalt_${HOSTNAME}.txt"  ## Same file the login helper reads.
 declare -ra encChildren=(".cache" "tmp" "var")  ## Separate datasets, left out of auto-snapshots.
+declare -r keyringHelper="/usr/local/sbin/tkz_keyring-passwd"
+declare -r watchdogLock="/dev/shm/tkz_zfs-crypthome_logout-watchdog.lock"  ## Same lock the watchdog takes.
 
 fShowHelp(){
 	cat <<EOF
@@ -32,6 +36,7 @@ Usage:
            --encrypt   Encrypted home, unlocked at login with the password.
            --admin     Also add to sudo and adm.
   passwd   Change the login password. For an encrypted home, change its ZFS key to match, in one step.
+           Also changes the user's GNOME login keyring password, given their current password.
   migrate  Move a user's plain home (a folder, or a plain dataset) into a new encrypted dataset.
            The user must be logged out. The old home is kept, renamed, until you delete it.
   status   Show users with a home dataset, and whether each is encrypted, unlocked and mounted.
@@ -147,41 +152,134 @@ fCmdAdd(){
 	fi
 }
 
+fChangeKeyring(){
+	## $1: user; $2: old password; $3: new password. Changes their GNOME login keyring's password, through
+	## the keyring daemon of their running session if there is one, else a private one. The home must be mounted.
+	## Returns tkz_keyring-passwd's exit code: 0 changed, 3 old password rejected, anything else an error.
+	local -r u="$1"
+	local -r uid="$(id -u "${u}")"
+	local -r home="$(getent passwd "${u}" | cut -d: -f6)"
+	local -ra baseEnv=(HOME="${home}" USER="${u}" LOGNAME="${u}" PATH=/usr/sbin:/usr/bin:/sbin:/bin)
+	local -i rc=0
+	if pgrep -u "${u}" -f '^/usr/bin/gnome-keyring-daemon' >/dev/null  &&  [[ -S "/run/user/${uid}/bus" ]]; then
+		printf '%s\n%s\n' "$2" "$3" | runuser -u "${u}" -- env -i "${baseEnv[@]}" XDG_RUNTIME_DIR="/run/user/${uid}" \
+			DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" "${keyringHelper}"  ||  rc=$?
+	else
+		## Short path: the daemon's control socket goes in here, and socket paths max out at 108 bytes.
+		local rt=""
+		rt="$(mktemp -d /run/tkz-keyring.XXXXXX)"
+		chown "${u}:" "${rt}"; chmod 700 "${rt}"
+		printf '%s\n%s\n' "$2" "$3" | runuser -u "${u}" -- env -i "${baseEnv[@]}" XDG_RUNTIME_DIR="${rt}" \
+			dbus-run-session -- "${keyringHelper}" --private-daemon  ||  rc=$?
+		rm -rf "${rt}"
+	fi
+	return "${rc}"
+}
+
+## Set by fCmdPasswd(), undone by fPasswdCleanup() on any exit.
+declare passwdDs=""
+declare -i passwdLoadedHere=0 passwdMountedHere=0
+
+fPasswdCleanup(){
+	((passwdMountedHere))  &&  { zfs unmount "${passwdDs}" 2>/dev/null  ||  echo "${meName}: WARNING: couldn't unmount '${passwdDs}' again." >&2; }
+	((passwdLoadedHere))   &&  { zfs unload-key "${passwdDs}" 2>/dev/null  ||  echo "${meName}: WARNING: couldn't unload the key of '${passwdDs}' again." >&2; }
+	return 0
+}
+
 fCmdPasswd(){
 	local -r u="${1:-}"
 	[[ -n "${u}" ]]  ||  fDie "Missing user name."
 	fUserExists "${u}"  ||  fDie "No user '${u}'."
 	local -r parent="$(fHomeParent)"
 	local -r ds="${parent}/${u}"
+	local -r keyringFile="$(getent passwd "${u}" | cut -d: -f6)/.local/share/keyrings/login.keyring"
 	local encRoot=""
 	encRoot="$(zfs get -H -o value encryptionroot "${ds}" 2>/dev/null || true)"
+	local -i isEnc=0
+	if [[ -n "${encRoot}" && "${encRoot}" != "-" ]]; then
+		[[ "${encRoot}" == "${ds}" ]]  ||  fDie "'${ds}' inherits its key from '${encRoot}'. Not a per-user key; change it by hand."
+		isEnc=1
+	fi
 
-	if [[ -z "${encRoot}" || "${encRoot}" == "-" ]]; then
+	local oldPwd="" newPwd=""
+	if ((isEnc)); then
+		## Hold the logout watchdog off while this has the home open, or it can relock it halfway through.
+		exec {watchdogLockFd}>"${watchdogLock}"
+		flock -w 300 "${watchdogLockFd}"  ||  fDie "The logout watchdog has been running for 5 minutes. Try again later."
+		passwdDs="${ds}"
+		trap fPasswdCleanup EXIT
+
+		if [[ "$(zfs get -H -o value keystatus "${ds}")" != "available" ]]; then
+			read -r -s -p "Current password for '${u}': " oldPwd; echo
+			fZfsKeyFor "${oldPwd}" | zfs load-key "${ds}"  ||  fDie "Wrong current password (the home's key didn't load)."
+			passwdLoadedHere=1
+		fi
+		## The keyring file is in the home itself.
+		if [[ "$(zfs get -H -o value mounted "${ds}")" != "yes" ]]; then
+			zfs mount "${ds}"  &&  passwdMountedHere=1
+		fi
+	fi
+
+	## The keyring can only be re-encrypted with its old password, which root doesn't otherwise have.
+	local -i doKeyring=0
+	if [[ -f "${keyringFile}" ]]; then
+		if [[ ! -x "${keyringHelper}" ]]; then
+			echo "${meName}: WARNING: '${keyringHelper}' is missing, so '${u}'s login keyring keeps its old password." >&2
+		else
+			if [[ -z "${oldPwd}" ]]; then
+				read -r -s -p "Current password for '${u}', to update their login keyring (Enter to skip): " oldPwd; echo
+				if [[ -n "${oldPwd}" ]] && ((isEnc)); then
+					fZfsKeyFor "${oldPwd}" | zfs load-key -n "${ds}" &>/dev/null  ||  fDie "Wrong current password. Nothing changed."
+				fi
+			fi
+			if [[ -n "${oldPwd}" ]]; then
+				doKeyring=1
+			else
+				echo "${meName}: WARNING: skipping the login keyring. It keeps the old password, so it won't unlock at login." >&2
+			fi
+		fi
+	fi
+
+	## A plain home with no keyring to update: plain 'passwd' as before, with its own prompts and checks.
+	if ((! isEnc && ! doKeyring)); then
 		passwd "${u}"
 		return
 	fi
-	[[ "${encRoot}" == "${ds}" ]]  ||  fDie "'${ds}' inherits its key from '${encRoot}'. Not a per-user key; change it by hand."
 
-	local -i loadedHere=0
-	if [[ "$(zfs get -H -o value keystatus "${ds}")" != "available" ]]; then
-		local oldPwd=""
-		read -r -s -p "Current password for '${u}': " oldPwd; echo
-		fZfsKeyFor "${oldPwd}" | zfs load-key "${ds}"  ||  fDie "Wrong current password (the home's key didn't load)."
-		loadedHere=1
-	fi
-
-	local newPwd=""
 	fReadNewPassword "${u}"
 
-	fSay "Changing the ZFS key of '${ds}'"
-	fZfsKeyFor "${newPwd}" | zfs change-key -o keyformat=passphrase -o keylocation=prompt "${ds}"
+	## Keyring first. For a plain home that's also the check that the current password is right.
+	local keyringNote=""
+	if ((doKeyring)); then
+		fSay "Changing the login keyring's password"
+		local -i krc=0
+		fChangeKeyring "${u}" "${oldPwd}" "${newPwd}"  ||  krc=$?
+		case "${krc}" in
+			0)  keyringNote=" Login keyring changed too." ;;
+			3)  ((isEnc))  ||  fDie "The keyring rejected the current password. Nothing changed. If the keyring's password differs from the login password, give the keyring's as the current one, or press Enter there to skip it."
+			    echo "${meName}: WARNING: the keyring rejected the current password, so its password already differed from the login one. Left as is." >&2 ;;
+			*)  echo "${meName}: WARNING: couldn't change the login keyring's password (exit ${krc}). It keeps the old one." >&2 ;;
+		esac
+	fi
+
+	if ((isEnc)); then
+		fSay "Changing the ZFS key of '${ds}'"
+		fZfsKeyFor "${newPwd}" | zfs change-key -o keyformat=passphrase -o keylocation=prompt "${ds}"
+	fi
 	fSay "Changing the login password"
 	if ! printf '%s:%s\n' "${u}" "${newPwd}" | chpasswd; then
-		echo "${meName}: WARNING: the ZFS key changed, but the login password didn't. Run this again before '${u}' logs out." >&2
+		if ((isEnc)); then
+			echo "${meName}: WARNING: the ZFS key changed, but the login password didn't. Run this again before '${u}' logs out." >&2
+		else
+			echo "${meName}: WARNING: the login keyring changed, but the login password didn't. Run this again." >&2
+		fi
 		exit 1
 	fi
-	((loadedHere))  &&  zfs unload-key "${ds}" 2>/dev/null || true
-	fSay "Done. Password and home key both changed."
+	if ((isEnc)); then
+		fSay "Done. Password and home key both changed.${keyringNote}"
+	else
+		fSay "Done. Password changed.${keyringNote}"
+	fi
 }
 
 fCmdMigrate(){
@@ -296,3 +394,6 @@ fMain "$@"
 
 ##	History:
 ##		- 20261011 tt: Created. add, passwd, migrate, status.
+##		- 20261012 tt: 'passwd' also changes the GNOME login keyring's password, given the current password.
+##		  It holds the logout watchdog's lock while it has a logged-out user's home open, and unmounts and
+##		  relocks it on any exit.

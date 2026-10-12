@@ -1,0 +1,189 @@
+#!/usr/bin/python3 -I
+
+##	Purpose:
+##		- Changes the password of a user's GNOME login keyring (~/.local/share/keyrings/login.keyring), given
+##		  the old and the new password. pam_gnome_keyring only does this when the user changes their own
+##		  password through PAM; 'chpasswd' run by root leaves the keyring on the old password, and it then
+##		  stops unlocking at login.
+##		- Called by 'tkz_user passwd', as the target user. Not normally run by hand.
+##	Syntax:
+##		tkz_keyring-passwd  [--private-daemon]  < (old password line, new password line)
+##	Options:
+##		    --private-daemon .: Start a gnome-keyring-daemon of its own on the current session bus, and stop
+##		                        it afterwards. For a user who isn't logged in. Run it under 'dbus-run-session',
+##		                        with XDG_RUNTIME_DIR pointing at a private dir. Without this option it uses the
+##		                        daemon already on DBUS_SESSION_BUS_ADDRESS, the user's own session.
+##		-h, --help ...........: This.
+##	Exit codes:
+##		0 = changed.
+##		1 = error; the reason is on stderr.
+##		2 = usage error.
+##		3 = the keyring rejected the old password. Nothing changed.
+##		4 = there's no login keyring.
+##	Notes:
+##		- Passwords come on stdin, one per line, so they never appear on a command line.
+##		- Uses gnome-keyring's 'org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface.ChangeWithMasterPassword'.
+##		  Despite the name, it's what Seahorse-style tools use, and it has been stable for years. If a future
+##		  gnome-keyring drops it, this exits 1 and 'tkz_user' warns that the keyring wasn't changed.
+##	Copyright and license ...: Toward bottom of this file.
+##	History .................: At bottom of this file.
+
+##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Licensed under The GNU General Public License v2.0 or later.
+##		https://spdx.org/licenses/GPL-2.0-or-later.html
+##	SPDX-License-Identifier: GPL-2.0-or-later
+
+import os
+import signal
+import subprocess
+import sys
+import time
+
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+ME_NAME = os.path.basename(sys.argv[0])
+SECRETS_NAME = "org.freedesktop.secrets"
+SECRETS_PATH = "/org/freedesktop/secrets"
+SERVICE_IFACE = "org.freedesktop.Secret.Service"
+INTERNAL_IFACE = "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface"
+LOGIN_COLLECTION = "/org/freedesktop/secrets/collection/login"
+DAEMON = "/usr/bin/gnome-keyring-daemon"
+
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_BAD_OLD, EXIT_NO_KEYRING = 0, 1, 2, 3, 4
+
+
+def fSay(msg):
+	print(f"{ME_NAME}: {msg}", file=sys.stderr)
+
+
+def fShowSyntax():
+	inSection = False
+	with open(sys.argv[0], encoding="utf-8") as f:
+		for line in f:
+			if line.startswith("##\tSyntax:"):
+				inSection = True
+			elif line.startswith("##\tNotes:"):
+				break
+			if inSection:
+				print(line.rstrip("\n").replace("##\t", "", 1).replace("\t", "  ", 1))
+
+
+def fCall(bus, iface, method, params, replyType=None):
+	return bus.call_sync(SECRETS_NAME, SECRETS_PATH, iface, method, params,
+		GLib.VariantType(replyType) if replyType else None, Gio.DBusCallFlags.NONE, 30000, None)
+
+
+def fWaitForService(bus, timeoutSec=10):
+	deadline = time.monotonic() + timeoutSec
+	while time.monotonic() < deadline:
+		reply = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+			"NameHasOwner", GLib.Variant("(s)", (SECRETS_NAME,)), GLib.VariantType("(b)"),
+			Gio.DBusCallFlags.NONE, 5000, None)
+		if reply.unpack()[0]:
+			return True
+		time.sleep(0.1)
+	return False
+
+
+def fStartPrivateDaemon(bus):
+	runtimeDir = os.environ.get("XDG_RUNTIME_DIR", "")
+	if not runtimeDir or not os.path.isdir(runtimeDir):
+		raise RuntimeError("'--private-daemon' needs XDG_RUNTIME_DIR set to an existing private dir.")
+	controlDir = os.path.join(runtimeDir, "keyring")
+	os.makedirs(controlDir, mode=0o700, exist_ok=True)
+	proc = subprocess.Popen([DAEMON, "--foreground", "--components=secrets", f"--control-directory={controlDir}"],
+		stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+	if not fWaitForService(bus):
+		proc.kill()
+		raise RuntimeError("the private gnome-keyring-daemon didn't come up on the session bus.")
+	return proc
+
+
+def fStopPrivateDaemon(proc):
+	if proc is None or proc.poll() is not None:
+		return
+	proc.send_signal(signal.SIGTERM)
+	try:
+		proc.wait(timeout=10)
+	except subprocess.TimeoutExpired:
+		proc.kill()
+		proc.wait()
+
+
+def fChangePassword(bus, oldPwd, newPwd):
+	collections = fCall(bus, "org.freedesktop.DBus.Properties", "Get",
+		GLib.Variant("(ss)", (SERVICE_IFACE, "Collections")), "(v)").unpack()[0]
+	if LOGIN_COLLECTION not in collections:
+		return EXIT_NO_KEYRING
+
+	## A 'plain' session: the secrets cross the bus unencrypted, which is fine on a bus only this user can reach.
+	session = fCall(bus, SERVICE_IFACE, "OpenSession",
+		GLib.Variant("(sv)", ("plain", GLib.Variant("s", ""))), "(vo)").unpack()[1]
+
+	def fSecret(pwd):
+		return (session, b"", pwd.encode("utf-8"), "text/plain")
+
+	try:
+		fCall(bus, INTERNAL_IFACE, "ChangeWithMasterPassword",
+			GLib.Variant("(o(oayays)(oayays))", (LOGIN_COLLECTION, fSecret(oldPwd), fSecret(newPwd))))
+	except GLib.Error as e:
+		## gnome-keyring 48 answers a wrong old password with org.gnome.keyring.Error.Denied, "The password was invalid".
+		if Gio.DBusError.get_remote_error(e) == "org.gnome.keyring.Error.Denied":
+			return EXIT_BAD_OLD
+		raise
+	finally:
+		try:
+			bus.call_sync(SECRETS_NAME, session, "org.freedesktop.Secret.Session", "Close", None, None,
+				Gio.DBusCallFlags.NONE, 5000, None)
+		except GLib.Error:
+			pass
+	return EXIT_OK
+
+
+def fMain(argv):
+	privateDaemon = False
+	for arg in argv:
+		if arg in ("-h", "--help"):
+			fShowSyntax()
+			return EXIT_OK
+		if arg == "--private-daemon":
+			privateDaemon = True
+		else:
+			fSay(f"unrecognized argument '{arg}'. Try '{ME_NAME} --help'.")
+			return EXIT_USAGE
+
+	lines = sys.stdin.read().split("\n")
+	if len(lines) < 2 or not lines[0] or not lines[1]:
+		fSay("expected the old and the new password on stdin, one per line.")
+		return EXIT_USAGE
+	oldPwd, newPwd = lines[0], lines[1]
+
+	proc = None
+	try:
+		bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+		if privateDaemon:
+			proc = fStartPrivateDaemon(bus)
+		result = fChangePassword(bus, oldPwd, newPwd)
+	except (GLib.Error, RuntimeError) as e:
+		fSay(f"ERROR: {e}")
+		return EXIT_ERROR
+	finally:
+		fStopPrivateDaemon(proc)
+
+	if result == EXIT_NO_KEYRING:
+		fSay("there's no login keyring.")
+	elif result == EXIT_BAD_OLD:
+		fSay("the keyring rejected the old password. Nothing changed.")
+	return result
+
+
+if __name__ == "__main__":
+	sys.exit(fMain(sys.argv[1:]))
+
+
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+## History:
+##		- 20261012 tt: Created, for 'tkz_user passwd'.
+##•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••

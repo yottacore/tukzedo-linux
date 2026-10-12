@@ -945,12 +945,13 @@ The stick can be ext4, FAT or exFAT. Plug it into the machine you're working on.
 
 ### Add and manage users
 
-`tkz_user` creates users whose home is its own dataset, plain or encrypted. It also keeps an encrypted home's ZFS key in step with the login password. Plain `passwd` doesn't do that, so the next login would fail to unlock the home.
+`tkz_user` creates users whose home is its own dataset, plain or encrypted. It also keeps an encrypted home's ZFS key, and the user's GNOME login keyring, in step with the login password. Plain `passwd` run by root does neither, so the next login would fail to unlock the home, and the keyring would stop unlocking at login.
 
 - Install it:
 
 	~~~bash
-	install -o root -g root -m 0755 /root/tkz-repo/filesystem/debian_13/usr/local/sbin/tkz_user /usr/local/sbin/
+	cd /root/tkz-repo/filesystem/debian_13/usr/local/sbin
+	install -o root -g root -m 0755 tkz_user tkz_keyring-passwd /usr/local/sbin/
 	~~~
 
 - Add a user with an encrypted home, or a plain one:
@@ -961,6 +962,8 @@ The stick can be ext4, FAT or exFAT. Plug it into the machine you're working on.
 	~~~
 
 - Change a password. For an encrypted home, this changes the ZFS key too. If the user is logged out, it asks for the current password first, to unlock the home's key.
+
+	If the user has a GNOME login keyring (`~/.local/share/keyrings/login.keyring`), it also asks for the current password to re-encrypt the keyring, since nothing can change a keyring's password without it. Press Enter there to skip, for example to reset a forgotten password. The keyring then keeps the old password and asks for it after the next login.
 
 	~~~bash
 	tkz_user passwd alice
@@ -1016,7 +1019,7 @@ Up to here, everything ran in the VM. If the target is the machine's own interna
 	cryptsetup luksKillSlot $dev <old-slot-number>
 	~~~
 
-- A user with an encrypted home: `tkz_user passwd <user>`. Anyone else: `passwd <user>`.
+- A user with an encrypted home or a login keyring: `tkz_user passwd <user>`. Anyone else: `passwd <user>`.
 
 - After changing root's password, rebuild the UKI with `tkz_rebuild-uki --all`. The initrd keeps a copy of root's password hash, for the emergency shell.
 
@@ -1196,6 +1199,8 @@ These scripts won't necessarily do much good without following an installation g
 	~~~
 
 ## Document history
+
+- 2026-10-12: `tkz_user passwd` also changes the user's GNOME login keyring password, through the new `tkz_keyring-passwd`.
 
 - 2026-10-11: Rewrote the procedure as real steps. Grub and bpool are gone, and shim starts systemd-boot from a 4 GiB ESP. Added USB key unlock, SSH unlock with dracut-sshd 0.7.1, the ZFS mount generator, and `tkz_user`.
 
