@@ -1,20 +1,21 @@
 ## Initrd only. Installed by the 99tkz-zfs-import dracut module.
-## Fallback for the stock 'zfs-import-scan.service', which runs once, doesn't wait for LVM, and gives up.
+## Runs before the stock 'zfs-import-scan.service', which doesn't wait for LVM. dracut activates rd.lvm.lv=
+## volumes from its initqueue, and with rd.neednet=1 that waits up to 2 minutes for the network.
 ## Does nothing if the root pool is already imported.
 
 [Unit]
-Description=Import the ZFS root pool, retrying and forcing if needed
-Documentation=file:/usr/local/sbin/tkz_zfs-import
+Description=Import the ZFS root pool, after activating its LVM volumes
+Documentation=file:/usr/sbin/tkz_zfs-import
 DefaultDependencies=no
-After=zfs-import-scan.service zfs-import-cache.service
-After=cryptsetup.target systemd-udev-settle.service
-Before=zfs-import.target zfs-env-bootfs.service
+After=cryptsetup.target systemd-udev-settle.service zfs-load-module.service
+Before=zfs-import-scan.service zfs-import-cache.service zfs-import.target zfs-env-bootfs.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/tkz_zfs-import --root
-## The script stops itself after rd.tkz.zfs_import_timeout= seconds (default 60).
-TimeoutStartSec=infinity
-StandardOutput=journal+console
+## The script gives up after rd.tkz.zfs_import_timeout= seconds (default 60), but only checks between tries.
+## This catches a zpool, lvm or udevadm call that hangs, so the boot still reaches the emergency shell.
+TimeoutStartSec=5min
+StandardOutput=journal
 StandardError=journal+console

@@ -1,34 +1,38 @@
 ##	Purpose:
 ##		- At boot, before the stock 'zfs-import-scan.service': delete any '/etc/zfs/zpool.cache', then import
-##		  the pools listed in '/etc/tukzedo/zfs-pools.conf', retrying and forcing past a stale hostid.
+##		  the pools listed in '/etc/tukzedo/zfs-pools.conf', with retries.
 ##		- At shutdown: set 'cachefile=none' on every imported pool and delete the cache file again, which
 ##		  covers pools imported by hand during the session.
 ##	Notes:
 ##		- The stock scan skips itself when a cache file exists, and 'zfs-import-cache.service' is masked,
 ##		  so a leftover cache file would leave every non-root pool unimported.
 ##		- The root pool is imported in the initrd, by the 99tkz-zfs-import dracut module.
-##		- Pools not listed in the config are still imported by the stock scan, without force.
+##		- Pools not listed in the config are still imported by the stock scan, without force. Listed ones
+##		  are forced only when they're inside the boot LUKS container.
+##		- The script is in /usr/sbin because /usr/local is a dataset, and nothing orders its mount before
+##		  this unit. From there the condition below could skip the unit, and ExecStop could find it gone.
 ##		- If a listed pool can't be imported, the unit fails and its ExecStop doesn't run. The next boot
 ##		  clears the cache file anyway.
 ##	History:
 ##		- 20261012 tt: Created.
+##		- 20261012 tt: Run the script from /usr/sbin.
 
 [Unit]
 Description=Clear the ZFS cache file and import the declared ZFS pools
-Documentation=file:/usr/local/sbin/tkz_zfs-import
+Documentation=file:/usr/sbin/tkz_zfs-import
 DefaultDependencies=no
 Wants=systemd-udev-settle.service
 After=systemd-udev-settle.service cryptsetup.target systemd-remount-fs.service
 Before=zfs-import-scan.service zfs-import-cache.service zfs-import.target
 Conflicts=shutdown.target
 Before=shutdown.target
-ConditionFileIsExecutable=/usr/local/sbin/tkz_zfs-import
+ConditionFileIsExecutable=/usr/sbin/tkz_zfs-import
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/tkz_zfs-import --clear-cache --declared
-ExecStop=/usr/local/sbin/tkz_zfs-import --clear-cache
+ExecStart=/usr/sbin/tkz_zfs-import --clear-cache --declared
+ExecStop=/usr/sbin/tkz_zfs-import --clear-cache
 ## The script stops itself after IMPORT_TIMEOUT from the config file.
 TimeoutStartSec=10min
 
