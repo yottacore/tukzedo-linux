@@ -416,6 +416,19 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Opened: 20261011-194500
 	- `tkz_user passwd` does both. A `pam_exec` hook on the password stack could do it for every password change, `passwd` and desktop tools included.
 
+**Stop here for a next release**
+
+- Create an auto-update program that checks the online repo for a newer stable version, and self-updates if there is one.
+	- Type: Feature
+	- Priority: Medium
+	- Opened: 20261012-111807
+	- It cleans up outdated stuff as part of the update.
+	- It doesn't break anything currently running. Changes take effect at the next reboot.
+	- It is very robust, and migrates previous settings automatically.
+	- It is version-aware, so it can upgrade an arbitrarily old version.
+	- The check script downloads the latest upgrade script and runs it, rather than doing the upgrade itself.
+	- It knows whether it is running on Tukzedo Debian or Tukzedo NixOS.
+
 ### Deferred
 
 ### Canceled
