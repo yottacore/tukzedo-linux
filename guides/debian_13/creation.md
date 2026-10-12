@@ -413,6 +413,14 @@ Every step below reads these variables. Keep them in a file and source it in eac
 
 	`layout=other` stops `kernel-install` from copying plain kernels and initrds to the ESP. Only the signed UKIs go there.
 
+- Mask the iSCSI and NFS client units. `dracut-network` recommends `open-iscsi` and `nfs-common`, so apt installs them, and nothing here uses either. With no network, `open-iscsi.service` holds the login prompt for about 2 minutes while it waits for one. The initrd already leaves both out. `systemctl unmask` undoes it.
+
+	~~~bash
+	systemctl mask open-iscsi.service iscsid.service iscsid.socket iscsiuio.service \
+		nfs-client.target nfs-blkmap.service nfs-idmapd.service rpc-statd.service rpc-statd-notify.service \
+		rpc-gssd.service rpc-svcgssd.service rpcbind.service rpcbind.socket
+	~~~
+
 - Install everything else. The firmware packages cover Intel, AMD and Nvidia graphics, and common Wi-Fi and Ethernet chips.
 
 	~~~bash

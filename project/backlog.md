@@ -57,13 +57,20 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Branch: zfs-import-fixes, merged into zfs-import
 	- Commit: 1a12fc6
 
-- With no network, b28l's login prompt waits about 2 minutes after the initrd is done. `open-iscsi.service` waits for `network-online.target` before it checks whether there are any iSCSI targets, and `remote-fs-pre.target`, then `systemd-user-sessions` and every getty, wait for it.
+- ✔️ With no network, b28l's login prompt waited about 2 minutes after the initrd was done. `open-iscsi.service` waits for `network-online.target` before it checks whether there are any iSCSI targets, and `remote-fs-pre.target`, then `systemd-user-sessions` and every getty, wait for it.
 	- Type: Bug
 	- Severity: Medium
+	- Status: Done
 	- Opened: 20261012-115028
 	- Origin: `dracut-network`, which the build guide installs, recommends `open-iscsi` and `nfs-common`, so apt installs them. Nothing here uses iSCSI.
 	- Measured: in a boot with the link down, `systemd-networkd-wait-online` timed out 2 minutes after the switch to the real system, and `remote-fs-pre.target` and the getty followed within a second. With the link up, the whole boot takes 16s.
 	- Probable fix: mask `open-iscsi.service`, `iscsid.service` and `iscsid.socket` in the build guide, or leave the package out. Check `networking.service` from ifupdown too, which is enabled alongside networkd.
+	- Fixed: the build guide masks the iSCSI units, and the NFS client units from `nfs-common` with `rpcbind`, right after installing dracut. Nothing here uses either, and the initrd already omits both. Applied the same way on b28l.
+	- Verified: on b28l in the VM, a boot with the link down reached the login prompt in 16.2s, down from 2min 14s.
+	- Test case: none. It's a guide step; the boot timing above is the check.
+	- Branch: mask-iscsi-nfs
+	- Closed: 20261012-123500
+	- Acceptance signoff: Self-closed: the user chose to mask both.
 
 - `tkz_rebuild-uki --all` leaves the UKIs it already rebuilt unsigned when a later kernel fails to build. With Secure Boot on, the default entry and its fallback won't boot.
 	- ID: Code Review 20261012 item 1
