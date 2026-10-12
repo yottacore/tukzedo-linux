@@ -86,6 +86,7 @@ function fGetMountpointFor(){
 }
 
 
+## tkz_user has a copy of this for 'migrate'. Keep the 2 the same; tests/tkz_user_migrate.bash checks.
 function fIsUserInUse(){
 	## Returns 0 (in use - do not touch) if the user looks logged in by any means, else 1.
 	local -r userName="$1"

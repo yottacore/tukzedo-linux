@@ -968,7 +968,7 @@ The stick can be ext4, FAT or exFAT. Plug it into the machine you're working on.
 
 	Loading a logged-out user's key by hand doesn't get around that prompt. The logout watchdog locks it again the next time any session closes.
 
-- Move an existing plain home into a new encrypted dataset. The user has to be logged out. Their files are copied over, and the old home is kept under a new name until you delete it.
+- Move an existing plain home into a new encrypted dataset. The user has to be logged out, with nothing of theirs still running. Their files are copied over, and the old home is kept under a new name until you delete it. If it fails partway, it puts back the old home and password. A `~/.cache`, `~/tmp` or `~/var` that's a symlink stays a symlink, and doesn't get its own dataset.
 
 	~~~bash
 	tkz_user migrate guest
