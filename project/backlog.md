@@ -318,10 +318,10 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Build guide: `rm -rf /boot/efi/$(cat /etc/machine-id)` wipes the ESP root if machine-id is empty. The live ISO link names `13.7.0` under `current-live`, which breaks on the next point release. The example photo path is left as the active value right after the `.hex` key is made. The user examples reuse `alice` and `guest`, who exist by then. "Turn on Secure Boot" sits in the VM phase.
 	- The login helper still points at the old `x9startup-log` path, which is dead code.
 
-- ◐ The logout watchdog locks a home whose key an admin loaded on purpose, within seconds. Any SSH session closing starts it, root's included, as does its 5-minute timer.
+- ✔️ The logout watchdog locked a home whose key an admin loaded on purpose, within seconds. Any SSH session closing starts it, root's included, as does its 5-minute timer.
 	- Type: Bug
 	- Severity: Medium
-	- Status: Waiting on signoff
+	- Status: Done
 	- Opened: 20261012-071500
 	- Keys loaded so `tkz_user passwd` can skip the current-password prompt get unloaded again before it runs.
 	- A runtime mask doesn't help, since the unit file in `/etc/systemd/system` wins over `/run`. Taking the exec bit off the script works as a stopgap.
@@ -334,7 +334,8 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Verified: `hold_skips_user`, `hold_waits_for_watchdog` and `hold_status` fail on main and pass on the branch. `hold_needs_real_user` passes on both, since main has no `hold`. Each also failed with its part of the fix taken out.
 	- Branch: run-tkz-locks
 	- Commit: 5ed36ad
-	- Acceptance signoff: waiting. The help and guide wording, and the 2 additions past the decision, are for review.
+	- Closed: 20261012-112500
+	- Acceptance signoff: Self-closed. The 2 additions keep within the decision's intent, and the user authorized closing.
 
 - ✔️ `tkz_user` carried on when no dataset was mounted at `/home`. It printed the error, but `local -r parent="$(fHomeParent)"` hid the exit, so `status` exited 0 and the other commands ran with an empty parent.
 	- Type: Bug
