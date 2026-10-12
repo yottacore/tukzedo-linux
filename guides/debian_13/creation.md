@@ -1058,6 +1058,14 @@ The desktop is LXQt on the Wayfire compositor, with SDDM as the login screen. Ev
 
 	`cmake --install` puts the upstream file back, so remove it again after any rebuild.
 
+- Give the login screen a theme. With none installed, SDDM shows a plain built-in one. Elarun is a single small package; the usual Breeze theme pulls in about 350 packages of KDE Plasma.
+
+	~~~bash
+	apt install --no-install-recommends sddm-theme-elarun
+	mkdir -p /etc/sddm.conf.d
+	printf '[Theme]\nCurrent=elarun\n' > /etc/sddm.conf.d/tkz-theme.conf
+	~~~
+
 - Start the login screen, or reboot. Pick "LXQt (Wayfire)" from the session menu before logging in.
 
 	~~~bash
