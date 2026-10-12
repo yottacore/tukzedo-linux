@@ -73,6 +73,13 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Origin: 118da99. No earlier review. Confirmed with stubbed `dracut` and `sbsign`: of 3 kernels, the newest failed for lack of `zfs.ko`, and the other 2 were left unsigned on the ESP.
 	- Cause: dracut overwrites each UKI on the ESP in place, and signing waits until every build is done. `set -e` stops at the first failed build. That failure is the newest-kernel-without-ZFS case the n-1 default exists for, and `--all` is the documented deploy step.
 	- Probable fix: build each UKI off the ESP, sign and `sbverify` it, then `mv` it into place, one kernel at a time.
+	- Progress log:
+		- 20261012: Planned with items 12 and 26, one branch. Not coded yet.
+			- Build into a work dir under `/var/tmp`, which dracut uses too. Run the module check there, sign into `<uki>.tmp` on the ESP, `sbverify`, `sync`, then `mv`. A failed kernel leaves its old UKI alone.
+			- `--all` goes on past a failed kernel, signs or verifies the rest, leaves `loader.conf` as it was, and exits non-zero.
+			- The ESP has room for one extra UKI during the swap. The guide makes it 4 GiB, and a UKI is about 90 MiB.
+			- Test plan: `tests/tkz_rebuild-uki.bash`, run in `unshare -rm` with stubs for `sudo`, `sleep`, `mountpoint`, `mount`, `zpool`, `dracut`, `lsinitrd`, `sbsign` and `sbverify`. `/etc` gets bind-mounted with `--rbind`, since a plain bind is refused, and then gets a tmpfs of symlinks. `/boot`, `/root`, `/usr/local`, `/var/log` and `/var/tmp` each get a tmpfs.
+	- Branch: uki-atomic
 
 - ✔️ `tkz_user migrate` moved the contents of any directory into the user's home, and gave the user ownership, if `~/cache`, `~/tmp` or `~/var` was a symlink to it.
 	- ID: Code Review 20261012 item 2
@@ -238,6 +245,13 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Origin: fe1a936 and 7fe69b2. No earlier review. Confirmed by reading.
 	- details.md calls the preflight a hard assert. `requiredFiles` (the usb-unlock module, `/root/.ssh/*`) is filled but never checked. Branch `zfs-import` adds the `forbiddenModules` check and leaves `requiredFiles` alone.
 	- The local array is declared as `...DirsAndOrContent`, while the code uses `...DirsOrContent`, so the real array is an accidental global.
+	- Progress log:
+		- 20261012: Planned, not coded yet.
+			- `REQ` and `FORB` stop the build. New `WANT` and `AVOID` only warn. The preflight moves ahead of the zpool cachefile clear, so a failed check changes nothing.
+			- Hard: the `zz-rebuild-uki` hook, the `/boot/efi` fstab `x-systemd.after`, `rd.luks.name`, `rd.lvm.lv` and `root=ZFS=` in `uki-cmdline.conf`, `loader.conf`, and the MOK key and cert when signing.
+			- Warn: the rest, since a generic initrd pulls in crypt, lvm and zfs anyway, and the module check after the build sees what's really in it. The `requiredFiles` entries become `WANT` rows, and the array goes away.
+			- Merging `zfs-import`: make its 2 command-line `FORB` rows `AVOID`, since that branch documents them as warnings. Its `REQ` rows for `tkz_zfs-import` and the dracut module can stay hard.
+	- Branch: uki-atomic
 
 - The helper scripts in `utility/` don't work. `do_init.bash` and `do_init_user-specific.bash` source `core.sh`, which doesn't exist, and `core.bash`'s hostid check always passes.
 	- ID: Code Review 20261012 item 13
@@ -462,6 +476,12 @@ Mark boxes with ✔️, 🚫, or ◐. Empty means not started, or WIP.
 	- Opened: 20261012-090724
 	- `tkz_rebuild-uki` signs UKIs and both `grubx64.efi` copies in place. A power loss or a full ESP mid-write leaves shim with nothing to load. `tkz_resign-sdboot` already uses a temp file.
 	- Re-signing an already signed image adds another signature each run. Not reproduced here.
+	- Progress log:
+		- 20261012: Planned, not coded yet.
+			- One function signs into `<file>.tmp`, verifies it, syncs it and renames it. The same copy goes in `tkz_resign-sdboot`, and a parity test checks the 2 match.
+			- A UKI that verifies isn't signed again. A systemd-boot copy is skipped only if it verifies and its `#### LoaderInfo: systemd-boot <version> ####` string matches the installed one. Otherwise an upgrade would never reach copies that `bootctl update` leaves alone.
+			- `loader.conf` gets written through a temp file too, and only when the default changes.
+	- Branch: uki-atomic
 
 - Warn about the secrets the UKI puts on the unencrypted ESP, and pin the initrd SSH host key.
 	- ID: Code Review 20261012 item 27
