@@ -43,7 +43,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Severity: Critical
 	- Opened: 20261012-083536
 	- Status: Waiting for testing
-	- Origin: `rd.neednet=1` in the build guide's command line, there since 42ded6a. Seen on the laptop's first boot.
+	- Origin: `rd.neednet=1` in the build guide's command line, there since 3486f1e. Seen on the laptop's first boot.
 	- Cause: with `rd.neednet=1`, dracut holds its initqueue until the network is up, for up to 2 minutes. The LVM volumes only activate from the initqueue. The stock ZFS import isn't ordered after them, so it ran right after unlock, found no pool, and the mount failed once the wait ran out. With a cable in, it was a race won by about a second.
 	- Confirmed: with the link down, the new import step logged the root LV as not active yet at 9s, and imported the pool. dracut's own LVM scan started at 122s.
 	- Fixed:
@@ -56,7 +56,7 @@ Where two items conflict, the one listed first is the desired behavior.
 		- Link down with only the import fix, still with `rd.neednet=1`: boots, with the initrd done at 2min 2s.
 	- Needs external testing: boot the laptop with the cable out, then with it in. Both should reach the login prompt, with no emergency shell. `journalctl -b -u tkz-zfs-import-root.service` should say the LV wasn't active yet, or was already active.
 	- Branch: zfs-import-fixes, merged into zfs-import
-	- Commit: 1a12fc6
+	- Commit: 6e4cd4a
 
 - ✔️ With no network, b28l's login prompt waited about 2 minutes after the initrd was done. `open-iscsi.service` waits for `network-online.target` before it checks whether there are any iSCSI targets, and `remote-fs-pre.target`, then `systemd-user-sessions` and every getty, wait for it.
 	- Type: Bug
@@ -78,7 +78,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Critical
 	- Opened: 20261012-090724
-	- Origin: 118da99. No earlier review. Confirmed with stubbed `dracut` and `sbsign`: of 3 kernels, the newest failed for lack of `zfs.ko`, and the other 2 were left unsigned on the ESP.
+	- Origin: e4903f5. No earlier review. Confirmed with stubbed `dracut` and `sbsign`: of 3 kernels, the newest failed for lack of `zfs.ko`, and the other 2 were left unsigned on the ESP.
 	- Cause: dracut overwrites each UKI on the ESP in place, and signing waits until every build is done. `set -e` stops at the first failed build. That failure is the newest-kernel-without-ZFS case the n-1 default exists for, and `--all` is the documented deploy step.
 	- Probable fix: build each UKI off the ESP, sign and `sbverify` it, then `mv` it into place, one kernel at a time.
 	- Progress log:
@@ -95,7 +95,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Severity: Critical
 	- Opened: 20261012-090724
 	- Status: Done
-	- Origin: a6cf5dc. No earlier review. Confirmed: the migrate loop run with `zfs` stubbed moved a symlinked target's files into the new home.
+	- Origin: 162edaa. No earlier review. Confirmed: the migrate loop run with `zfs` stubbed moved a symlinked target's files into the new home.
 	- Cause: `rsync -a` keeps the link, `[[ -d ]]` and the `mv .../*` glob follow it, and `fFixOwnership` then runs `chown -R`. A link to `/etc/mok` or `/root/.ssh` empties it.
 	- Probable fix: skip any child that is a symlink.
 	- Fixed: a `.cache`, `tmp` or `var` that is a symlink or a file is left as it is, with no dataset of its own. A folder moved aside gets a name with the run's timestamp, so a planted `var.migrating` link isn't followed either. The `chmod 700` in `fFixOwnership` skips symlinks. A `/home/<user>` that is itself a symlink is refused.
@@ -103,7 +103,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Test case: `tests/tkz_user_migrate.bash`, case `symlinked_children`.
 	- Verified: fails on main, where the files behind the `.cache`, `tmp` and `var.migrating` links were moved, and passes on the branch.
 	- Branch: migrate-safety
-	- Commit: f28d600
+	- Commit: ce98298
 	- Closed: 20261012-105755
 	- Acceptance signoff: Self-closed: reproduced, and the test fails before and passes after.
 
@@ -113,7 +113,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Severity: Critical
 	- Opened: 20261012-090724
 	- Status: Waiting for testing
-	- Origin: a6cf5dc. No earlier review. Confirmed: the login helper, run against a stubbed `zfs` in that state, refused the login.
+	- Origin: 162edaa. No earlier review. Confirmed: the login helper, run against a stubbed `zfs` in that state, refused the login.
 	- Cause: the temp dataset gets the automount user property when it is created, keyed to the new password. The login password changes only at the end. An rsync error, a busy unmount or `~/tmp` being a file stops it in between.
 	- Probable fix: set the property after the final rename, and add an EXIT trap that rolls back.
 	- Fixed: the automount property goes on last, after the password changes. Until then login and the watchdog both ignore the new dataset. Before, the watchdog could also lock the temp dataset in the middle of the copy.
@@ -123,7 +123,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Verified: all 7 fail on main and pass on the branch, with a fake zfs. Each runs the real login helper, which takes the old password after a failed migrate.
 	- Needs external testing: real ZFS on a test host with a throwaway user. Run `tkz_user migrate` to the end once. Then run it again on another user, and stop it partway: Ctrl-C during the copy, and a root shell sitting in the old home, which makes its unmount fail. After each failed run, the old home should be back and mounted, `zfs list` should show no `_migrating-` dataset, and the user should log in with the old password.
 	- Branch: migrate-safety
-	- Commit: f28d600
+	- Commit: ce98298
 
 - ✔️ Any user can stop the logout watchdog, and can block encrypted-home logins, by creating a lock file first.
 	- ID: Code Review 20261012 item 4
@@ -131,7 +131,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Severity: Critical
 	- Opened: 20261012-090724
 	- Status: Done
-	- Origin: 11a730b (watchdog), 1a19cbe (`tkz_zfs-mount`), a6cf5dc (`tkz_user`). No earlier review. Confirmed downstream: with a lock file root couldn't open, `tkz_zfs-mount` failed and the login helper refused the login.
+	- Origin: 1edc04a (watchdog), afcb24a (`tkz_zfs-mount`), 162edaa (`tkz_user`). No earlier review. Confirmed downstream: with a lock file root couldn't open, `tkz_zfs-mount` failed and the login helper refused the login.
 	- Cause: the locks sit in `/dev/shm` and `/run/lock`, which are world-writable and sticky. With `fs.protected_regular=2`, root can't open a file another user created there. The PAM line is `requisite`, and the fallback only covers a missing helper, not a failing one.
 	- Sweep: `tkz_zfs-crypthome_logout-watchdog`, `tkz_zfs-mount`, `tkz_user`.
 	- Probable fix: a root-only dir such as `/run/tkz/`, or `flock` on the script file itself.
@@ -144,7 +144,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Test case: `tests/tkz_locks.bash`, cases `watchdog_lock_root_only`, `watchdog_planted_flock`, `watchdog_planted_dir`, `mount_lock_root_only`, `mount_planted_dir`, `run_dir_tightened`, `run_dir_symlink`, `run_dir_not_root` and `parity_run_dir`. The `*_root_only` cases check every lock held during a run, so a new lock in a shared folder fails them too. They also fail on any file left in `/dev/shm` or `/run/lock`.
 	- Verified: all 9 fail on main and pass on the branch. A held flock or a folder at the old watchdog lock path kept the watchdog from locking a home, and a folder at the old mount lock path refused the login. The watchdog regression tests in private notes and `tests/tkz_user_migrate.bash` still pass.
 	- Branch: run-tkz-locks
-	- Commit: 5ed36ad
+	- Commit: b511564
 	- Closed: 20261012-111600
 	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
 
@@ -161,7 +161,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: High
 	- Opened: 20261012-090724
-	- Origin: 1a19cbe. No earlier review. The mechanism is confirmed in a simulation. A user can plant the link wherever a raw mountpoint dir sits under a dir they can write, such as a home whose child datasets were partly unmounted.
+	- Origin: afcb24a. No earlier review. The mechanism is confirmed in a simulation. A user can plant the link wherever a raw mountpoint dir sits under a dir they can write, such as a home whose child datasets were partly unmounted.
 	- Probable fix: refuse a base that is a symlink or not owned by root, and create it with `mkdir -m 700` without `-p`.
 
 - ✔️ On branch `zfs-import`, `tkz-zfs-import.service` could be skipped silently at boot, because it ran its script from `/usr/local`, which may not be mounted yet.
@@ -178,7 +178,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Test case: `tests/tkz_zfs-import.bash`, case `unit_no_usr_local`. It fails on `zfs-import` and passes here.
 	- Verified: on b28l the unit ran at each test boot from `/usr/sbin`.
 	- Branch: zfs-import-fixes, merged into zfs-import
-	- Commit: 1a12fc6
+	- Commit: 6e4cd4a
 	- Closed: 20261012-115028
 	- Acceptance signoff: Self-closed: the test fails before and passes after.
 
@@ -200,7 +200,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Verified: on b28l, the script finds the LUKS container and both LVs on it, and `zpool import -d` accepts device paths.
 	- Needs external testing: a boot after the root pool was last imported under another hostid and not exported. The journal should show "Imported 'rpool_<mUID>' with -f".
 	- Branch: zfs-import-fixes, merged into zfs-import
-	- Commit: 1a12fc6
+	- Commit: 6e4cd4a
 
 - ✔️ On branch `zfs-import`, a hung `zpool`, `lvm` or `udevadm` call in the initrd hung the boot forever, with no emergency shell.
 	- ID: Code Review 20261012 item 8
@@ -214,7 +214,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Fixed: `TimeoutStartSec=5min`, which leaves room past the script's 60s default for one slow try. The guide says `rd.tkz.zfs_import_timeout=` goes up to about 4 minutes.
 	- Test case: `tests/tkz_zfs-import.bash`, case `unit_root_timeout`. It fails on `zfs-import`, where the timeout is infinite, and passes here.
 	- Branch: zfs-import-fixes, merged into zfs-import
-	- Commit: 1a12fc6
+	- Commit: 6e4cd4a
 	- Closed: 20261012-115028
 	- Acceptance signoff: Self-closed: the test fails before and passes after.
 
@@ -223,7 +223,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: High
 	- Opened: 20261012-090724
-	- Origin: a6cf5dc. No earlier review. Confirmed from the guide's step order.
+	- Origin: 162edaa. No earlier review. Confirmed from the guide's step order.
 	- The guide says to copy the file off before partitioning, and the UUIDs are appended after. "Get back in" then opens LUKS and mounts by empty UUIDs.
 	- "Get back in" mounts the ESP, then "Enter the chroot" mounts it again. Teardown unmounts it once, so the root stays busy, and the next import needs `-f`.
 
@@ -232,7 +232,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
-	- Origin: a6cf5dc. No earlier review. Confirmed against the `cryptsetup-luksAddKey` man page.
+	- Origin: 162edaa. No earlier review. Confirmed against the `cryptsetup-luksAddKey` man page.
 	- For `luksAddKey`, `--keyfile-size` limits the existing key. The new key file needs `--new-keyfile-size`. The keyslot ends up holding the whole file, while `usb-unlock` reads only `KEYFILE_SIZE` bytes. The test step after it also lacks `--keyfile-size`.
 	- Sweep: the same advice is in the `usb-unlock.conf` comment.
 
@@ -241,7 +241,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
-	- Origin: a6cf5dc. No earlier review. Confirmed: `99usb-unlock/module-setup.sh` installs `/etc/tukzedo/usb-unlock.conf` into the initrd, so `lsinitrd` on a stolen drive names the file.
+	- Origin: 162edaa. No earlier review. Confirmed: `99usb-unlock/module-setup.sh` installs `/etc/tukzedo/usb-unlock.conf` into the initrd, so `lsinitrd` on a stolen drive names the file.
 	- The default key name `.keys/<mUID>.hex` also matches the plaintext LUKS label.
 	- Probable fix: state the exposure plainly. Hiding the path needs a different design, filed under enhancements.
 
@@ -250,7 +250,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
-	- Origin: fe1a936 and 7fe69b2. No earlier review. Confirmed by reading.
+	- Origin: d935ca0 and ff0ddbf. No earlier review. Confirmed by reading.
 	- details.md calls the preflight a hard assert. `requiredFiles` (the usb-unlock module, `/root/.ssh/*`) is filled but never checked. Branch `zfs-import` adds the `forbiddenModules` check and leaves `requiredFiles` alone.
 	- The local array is declared as `...DirsAndOrContent`, while the code uses `...DirsOrContent`, so the real array is an accidental global.
 	- Progress log:
@@ -266,7 +266,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
-	- Origin: 42ded6a, the first commit. No earlier review. Confirmed.
+	- Origin: 3486f1e, the first commit. No earlier review. Confirmed.
 	- The hostid pipe ends in `od ... /etc/hostid`, which ignores its input, so both lines read the same file. The byte order is also reversed from what `hostid` prints.
 	- `core.bash` still sets up `bpool_*`. `fPrepareZfsForReboot` turns on `zfs-import-scan` on the rescue host, which then auto-imports any attached pool at its next boot. Plausible.
 	- Probable fix: move `utility/` to `legacy/` unless something still uses it.
@@ -278,7 +278,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Severity: Medium
 	- Opened: 20261012-090724
 	- Status: Done
-	- Origin: a6cf5dc. No earlier review. Plausible.
+	- Origin: 162edaa. No earlier review. Plausible.
 	- It asks only `loginctl`, which the watchdog's recorded TTY rule says isn't enough. Writes after the copy go to the old home, and a busy unmount leads to item 3.
 	- Probable fix: reuse the watchdog's `fIsUserInUse`.
 	- Fixed: `migrate` has a copy of the watchdog's `fIsUserInUse`, so logind, `who` and any process on a TTY all count. It also refuses while the user has any process at all, which covers cron. It checks again after the copy, and rolls back if the user is back.
@@ -288,7 +288,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Test case: `tests/tkz_user_migrate.bash`, cases `in_use_who`, `in_use_su_tty`, `in_use_cron`, `in_use_during_copy` and `parity_in_use_test`. `in_use_loginctl` and `in_use_lingering` passed on main too.
 	- Verified: confirmed on main, where migrate went ahead for a `who` login, a `su -` shell and a cron job. The 5 cases fail on main and pass on the branch.
 	- Branch: migrate-safety
-	- Commit: f28d600
+	- Commit: ce98298
 	- Closed: 20261012-105755
 	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
 
@@ -297,7 +297,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
-	- Origin: a6cf5dc (`add`, `migrate`), 4ea029d (`passwd`). No earlier review. Plausible.
+	- Origin: 162edaa (`add`, `migrate`), 4ea029d (`passwd`). No earlier review. Plausible.
 	- `migrate` never changes the GNOME keyring password, which is the problem 4ea029d fixed for `passwd`.
 	- A failed `add`, for example `useradd` failing on a missing `sudo` group, leaves the encrypted home mounted and its key loaded. The watchdog skips it as "no such user" forever, and a rerun refuses because the dataset exists.
 	- If `passwd` can't mount the home, it skips the keyring with no warning and still reports "Done".
@@ -307,7 +307,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
-	- Origin: a6cf5dc and 4ea029d. No earlier review. Confirmed by reading against `tkz_user`.
+	- Origin: 162edaa and 4ea029d. No earlier review. Confirmed by reading against `tkz_user`.
 	- On a salted host, following those steps breaks the next login. `tkz_user passwd` does it right.
 	- The guide also says `tkz_user passwd` can reset a forgotten password. For an encrypted home it needs the current one.
 
@@ -316,7 +316,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
-	- Origin: 42ded6a. No earlier review. Confirmed from how LUKS keyslots work. ZFS `change-key` likewise keeps the master key.
+	- Origin: 3486f1e. No earlier review. Confirmed from how LUKS keyslots work. ZFS `change-key` likewise keeps the master key.
 	- Also in cloning.md: `cd tukzedo` names the wrong directory, the Grub fallback steps contradict creation.md, and the list of things to change for a new host leaves out `uki-cmdline.conf`, `usb-unlock.conf`, fstab, the `zfs-list.cache` file name, both sets of SSH host keys, the MOK and the salt file. Renaming the host breaks every encrypted home on a salted system.
 	- Probable fix: `cryptsetup reencrypt`, and re-create encrypted homes.
 
@@ -325,7 +325,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Medium
 	- Opened: 20261012-090724
-	- Origin: dcfe3f1. No earlier review. Plausible for the failure, confirmed for the header.
+	- Origin: 96701d4. No earlier review. Plausible for the failure, confirmed for the header.
 	- A dropped download leaves a partial `tkz_zfs-crypthome_login`. That script is PAM `requisite`, so every password login then fails. The README and the build guide both pipe it.
 	- Under `set -u`, a missing `USER` stops it.
 	- Probable fix: download to a temp file beside the target, then `install` and `mv`.
@@ -335,7 +335,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Low
 	- Opened: 20261012-090724
-	- Origin: a6cf5dc. No earlier review. Plausible.
+	- Origin: 162edaa. No earlier review. Plausible.
 	- A failed `umount` isn't checked. `/run` survives the switch to the real root, so the key file stays readable at `/run/usb-unlock-key`.
 	- The module doesn't install `ip`, so the message reads "No IP address yet" unless another module brings it in.
 
@@ -344,7 +344,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Low
 	- Opened: 20261012-090724
-	- Origin: 11a730b. No earlier review. Confirmed with the logger stubbed: for A begin, B begin, A end, B end, A's duration and depth came out wrong.
+	- Origin: 1edc04a. No earlier review. Confirmed with the logger stubbed: for A begin, B begin, A end, B end, A's duration and depth came out wrong.
 	- `tkz-apply-tunables` and `tkz-insure-efi-mount` aren't ordered against each other, so this can happen at boot.
 	- Probable fix: one stack per caller.
 
@@ -353,7 +353,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Low
 	- Opened: 20261012-090724
-	- Origin: 11a730b. No earlier review. Plausible.
+	- Origin: 1edc04a. No earlier review. Plausible.
 	- Options are lowercased, but the follow check is case-sensitive, so `journalctl -f` runs inside `$(...)`. The fallback records have no `TKZ_CALLER`, so the filter drops them.
 
 - `tkz_insure-efi-mount` and `tkz_apply-tunables` don't do what their help says.
@@ -361,7 +361,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Low
 	- Opened: 20261012-090724
-	- Origin: 11a730b, 5ee7b63. No earlier review. Plausible.
+	- Origin: 1edc04a, 7b08177. No earlier review. Plausible.
 	- `tkz_insure-efi-mount --dry-run` exits 0 while the mount is unhealthy, against its exit-code doc. `-v` and `--version` skip sudo but the parser rejects them.
 	- `tkz_apply-tunables --check --emit-native` writes the drop-ins, though `--check` says it changes nothing. `builtInNotes` is filled in a pipeline subshell and never read. `words=( $1 )` globs, which is wrong for a value with `*` or `?`. The `tunables.conf` header leaves out the dracut drop-in.
 
@@ -370,7 +370,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Low
 	- Opened: 20261012-090724
-	- Origin: 1a19cbe. No earlier review. Confirmed: `/media/u/My Disk` was read as `/media/u/My`.
+	- Origin: afcb24a. No earlier review. Confirmed: `/media/u/My Disk` was read as `/media/u/My`.
 	- Probable fix: read the filesystem type first and the target last, and decode `findmnt` escapes.
 
 - ✔️ On branch `zfs-import`, `tkz_zfs-import` reported the wrong reason when a forced import failed, and rejected some `root=` forms its comment says it takes.
@@ -385,7 +385,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Swept: the same reader serves `rd.lvm.lv`, `rd.luks.*` and `rd.tkz.zfs_import_timeout`.
 	- Test case: `tests/tkz_zfs-import.bash`, cases `force_fails_last_error`, `root_rootfstype` and `root_quoted`. All 3 fail on `zfs-import` and pass here. `root_not_zfs` and `root_autodetect` pass on both.
 	- Branch: zfs-import-fixes, merged into zfs-import
-	- Commit: 1a12fc6
+	- Commit: 6e4cd4a
 	- Closed: 20261012-115028
 	- Acceptance signoff: Self-closed: reproduced, and the tests fail before and pass after.
 
@@ -394,7 +394,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Bug
 	- Severity: Low
 	- Opened: 20261012-090724
-	- Origin: a6cf5dc for the build guide, 42ded6a for the rest. No earlier review. Confirmed.
+	- Origin: 162edaa for the build guide, 3486f1e for the rest. No earlier review. Confirmed.
 	- FAQ says the cache file is reset on every boot. On main only `tkz_rebuild-uki` clears it. FAQ links to a guide path that doesn't exist.
 	- contributing.md links `code%20of%20conduct.md`. The file is `code_of_conduct.md`.
 	- design.md relies on fstab rbinds that only b23 has. todo.md has stale entries.
@@ -416,7 +416,7 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Test case: `tests/tkz_locks.bash`, cases `hold_skips_user`, `hold_waits_for_watchdog`, `hold_needs_real_user` and `hold_status`.
 	- Verified: `hold_skips_user`, `hold_waits_for_watchdog` and `hold_status` fail on main and pass on the branch. `hold_needs_real_user` passes on both, since main has no `hold`. Each also failed with its part of the fix taken out.
 	- Branch: run-tkz-locks
-	- Commit: 5ed36ad
+	- Commit: b511564
 	- Closed: 20261012-112500
 	- Acceptance signoff: Self-closed. The 2 additions keep within the decision's intent, and the user authorized closing.
 
@@ -425,11 +425,11 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Severity: Low
 	- Opened: 20261012-105755
 	- Status: Done
-	- Origin: a6cf5dc.
+	- Origin: 162edaa.
 	- Fixed: declared and assigned on separate lines, at all 4 call sites.
 	- Test case: `tests/tkz_user_migrate.bash`, case `no_home_dataset`. Fails on main and passes on the branch.
 	- Branch: migrate-safety
-	- Commit: f28d600
+	- Commit: ce98298
 	- Closed: 20261012-105755
 	- Acceptance signoff: Self-closed: mechanical.
 
