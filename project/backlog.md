@@ -627,6 +627,29 @@ Where two items conflict, the one listed first is the desired behavior.
 	- It also draws the desktop icons. nemo-anywhere has no desktop of its own.
 	- It's a separate project from nemo-anywhere and silkterm.
 
+- Install a full set of command-line tools by default, so scripts and habits from other distros work out of the box.
+	- Type: Feature
+	- Priority: Medium
+	- Opened: 20261015-154838
+	- Debian 13 package names. All are in the main repo.
+		- Core and POSIX: `coreutils findutils grep sed gawk diffutils patch tar gzip bzip2 xz-utils zstd lz4 util-linux bsdextrautils procps psmisc file less man-db manpages manpages-dev bc time ed m4 at sharutils ncompress pax moreutils`
+		- Files: `trash-cli rsync tree ncdu rename acl attr zip unzip 7zip pv dos2unix`
+		- Network: `curl wget openssh-client iproute2 iputils-ping bind9-dnsutils netcat-openbsd socat traceroute mtr-tiny whois ethtool`
+		- Search and data: `ripgrep fd-find jq parallel`
+		- Build: `build-essential autoconf automake libtool pkg-config cmake ninja-build meson bison flex gdb strace ltrace git shellcheck python3 python3-venv`
+		- System and hardware: `htop lsof sysstat iotop-c pciutils usbutils lshw dmidecode smartmontools nvme-cli hdparm tmux sudo`
+	- Goes in the build guide as one `apt install` step, and the NixOS edition gets the same set.
+	- Many are already there from the base install. Listing them anyway keeps them if a later step removes something.
+
+- The desktop has no working screen locker.
+	- Type: Feature
+	- Priority: High
+	- Opened: 20261015-154838
+	- LXQt's autostart runs `xscreensaver`, which isn't installed, and X lockers can't lock a Wayfire session anyway.
+	- Needs a Wayland locker and an idle daemon that locks before the display powers off and before suspend.
+	- Only one program should own each of blank, lock, and display power, or they race.
+	- Seen on b28l's XFCE: `light-locker` only works with LightDM, so under SDDM the screen goes black but never locks.
+
 ### Done
 
 #### Done - Bugs
