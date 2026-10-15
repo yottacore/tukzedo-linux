@@ -640,6 +640,7 @@ Where two items conflict, the one listed first is the desired behavior.
 		- System and hardware: `htop lsof sysstat iotop-c pciutils usbutils lshw dmidecode smartmontools nvme-cli hdparm tmux sudo`
 		- Packages: `aptitude`
 		- Archives: `rar unrar`
+		- Hashes: `b3sum` for BLAKE3. BLAKE2 is `b2sum`, already in coreutils.
 	- Our own tools, from their GitHub releases: `gitsby` and `zuid` on the command line, `nemo-anywhere` and `silkterm` on the desktop.
 	- Goes in the build guide as one `apt install` step, and the NixOS edition gets the same set.
 	- Many are already there from the base install. Listing them anyway keeps them if a later step removes something.
