@@ -631,13 +631,16 @@ Where two items conflict, the one listed first is the desired behavior.
 	- Type: Feature
 	- Priority: Medium
 	- Opened: 20261015-154838
-	- Debian 13 package names. All are in the main repo.
+	- Debian 13 package names. All are in main, except `rar` and `unrar` in non-free, which the guide's sources already turn on.
 		- Core and POSIX: `coreutils findutils grep sed gawk diffutils patch tar gzip bzip2 xz-utils zstd lz4 util-linux bsdextrautils procps psmisc file less man-db manpages manpages-dev bc time ed m4 at sharutils ncompress pax moreutils`
 		- Files: `trash-cli rsync tree ncdu rename acl attr zip unzip 7zip pv dos2unix`
 		- Network: `curl wget openssh-client iproute2 iputils-ping bind9-dnsutils netcat-openbsd socat traceroute mtr-tiny whois ethtool`
 		- Search and data: `ripgrep fd-find jq parallel`
 		- Build: `build-essential autoconf automake libtool pkg-config cmake ninja-build meson bison flex gdb strace ltrace git shellcheck python3 python3-venv`
 		- System and hardware: `htop lsof sysstat iotop-c pciutils usbutils lshw dmidecode smartmontools nvme-cli hdparm tmux sudo`
+		- Packages: `aptitude`
+		- Archives: `rar unrar`
+	- Our own tools, from their GitHub releases: `gitsby` and `zuid` on the command line, `nemo-anywhere` and `silkterm` on the desktop.
 	- Goes in the build guide as one `apt install` step, and the NixOS edition gets the same set.
 	- Many are already there from the base install. Listing them anyway keeps them if a later step removes something.
 
