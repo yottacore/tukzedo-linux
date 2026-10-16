@@ -34,6 +34,15 @@ Where two items conflict, the one listed first is the desired behavior.
 
 ## Issues
 
+- Pre-next-cut: The core set of CLI tools we settled on goes in Tukzedo-Linux, "underneath" LXQtukz.
+	- ID: 2026101609000004
+	- Type: Task
+	- Status: Queued
+	- Opened: 20261016-090000
+	- Opened by: t00mietum
+	- Related IDs: 2026101609000001, 2026101609000002
+	- Note: FYI. The tool list itself isn't in this item yet.
+
 ## Old format
 
 ### Bugs
